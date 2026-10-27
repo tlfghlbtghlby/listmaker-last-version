@@ -310,6 +310,17 @@ export const POSView: React.FC<POSViewProps> = ({ onInvoiceCreated, onOpenNewPro
     });
   }, [products, selectedCategory, searchQuery]);
 
+  // تقييد العرض المبدئي لبطاقات المواد لتسريع الشاشة ومنع التهنيج
+  const [displayLimit, setDisplayLimit] = useState(48);
+
+  useEffect(() => {
+    setDisplayLimit(48);
+  }, [searchQuery, selectedCategory]);
+
+  const visibleProducts = useMemo(() => {
+    return filteredProducts.slice(0, displayLimit);
+  }, [filteredProducts, displayLimit]);
+
   const selectedCustomer = useMemo(() => {
     return customers.find((c) => c.id === selectedCustomerId);
   }, [customers, selectedCustomerId]);
@@ -929,7 +940,7 @@ export const POSView: React.FC<POSViewProps> = ({ onInvoiceCreated, onOpenNewPro
               ) : viewMode === 'grid' ? (
                 /* وضع المربعات المصغرة مثل مستعرض ويندوز: يظهر فقط السعر واسم المادة */
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-2">
-                  {filteredProducts.map((prod) => {
+                  {visibleProducts.map((prod) => {
                     const isOutOfStock = prod.stock <= 0;
                     const effectivePrice = globalPriceType === 'wholesale' && settings.enableWholesale 
                       ? prod.wholesalePrice 
@@ -983,7 +994,7 @@ export const POSView: React.FC<POSViewProps> = ({ onInvoiceCreated, onOpenNewPro
               ) : (
                 /* وضع القائمة التفصيلية */
                 <div className="flex flex-col gap-2.5">
-                  {filteredProducts.map((prod) => {
+                  {visibleProducts.map((prod) => {
                     const isLowStock = prod.stock <= prod.minStock;
                     const isOutOfStock = prod.stock <= 0;
 
@@ -1149,6 +1160,19 @@ export const POSView: React.FC<POSViewProps> = ({ onInvoiceCreated, onOpenNewPro
                       </div>
                     );
                   })}
+                </div>
+              )}
+
+              {/* زر عرض المزيد عند كثرة المواد لتسريع الواجهة ومنع التهنيج */}
+              {filteredProducts.length > displayLimit && (
+                <div className="mt-4 text-center">
+                  <button
+                    type="button"
+                    onClick={() => setDisplayLimit(prev => prev + 48)}
+                    className="px-5 py-2.5 bg-white hover:bg-slate-100 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 shadow-2xs transition cursor-pointer"
+                  >
+                    عرض المزيد من المواد (متبقي {filteredProducts.length - displayLimit} مادة)
+                  </button>
                 </div>
               )}
             </div>

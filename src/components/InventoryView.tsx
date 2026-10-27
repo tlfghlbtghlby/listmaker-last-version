@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import { Product } from '../types';
 import { 
@@ -93,6 +93,25 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
         return sortOrder === 'asc' ? diff : -diff;
       });
   }, [products, selectedCategory, searchQuery, stockFilter, sortBy, sortOrder]);
+
+  // Pagination State (تسريع عرض الجدول ومنع تجميد الشاشة)
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(50);
+
+  // إعادة الترقيم للصفحة الأولى عند تغير خيارات البحث أو التصفية
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, selectedCategory, stockFilter, sortBy, sortOrder]);
+
+  const effectivePageSize = pageSize === -1 ? (filteredProducts.length || 1) : pageSize;
+  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / effectivePageSize));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+
+  const paginatedProducts = useMemo(() => {
+    if (pageSize === -1) return filteredProducts;
+    const start = (safeCurrentPage - 1) * pageSize;
+    return filteredProducts.slice(start, start + pageSize);
+  }, [filteredProducts, safeCurrentPage, pageSize]);
 
   // Overall Inventory Stats
   const totalItemsCount = products.reduce((sum, p) => sum + p.stock, 0);
@@ -379,7 +398,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   </td>
                 </tr>
               ) : (
-                filteredProducts.map((prod) => {
+                paginatedProducts.map((prod) => {
                   const retailProfit = prod.retailPrice - prod.costPrice;
                   const retailMarginPercent = prod.costPrice > 0 ? ((retailProfit / prod.costPrice) * 100).toFixed(0) : '100';
                   const isLow = prod.stock <= prod.minStock && prod.stock > 0;
@@ -584,6 +603,76 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
             </tbody>
           </table>
         </div>
+
+        {/* Pagination Controls */}
+        {filteredProducts.length > 0 && (
+          <div className="p-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-600">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">عرض:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="bg-white border border-slate-300 rounded px-2 py-1 font-bold text-slate-800 focus:outline-none"
+              >
+                <option value={25}>25 مادة</option>
+                <option value={50}>50 مادة</option>
+                <option value={100}>100 مادة</option>
+                <option value={-1}>عرض الكل ({filteredProducts.length})</option>
+              </select>
+              <span className="text-slate-500">
+                | عرض {((safeCurrentPage - 1) * effectivePageSize) + 1} إلى {Math.min(safeCurrentPage * effectivePageSize, filteredProducts.length)} من أصل {filteredProducts.length} مادة
+              </span>
+            </div>
+
+            {pageSize !== -1 && totalPages > 1 && (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  disabled={safeCurrentPage <= 1}
+                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                  className="px-2.5 py-1 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition font-bold cursor-pointer"
+                >
+                  السابق
+                </button>
+                <div className="flex items-center gap-1 font-bold">
+                  {Array.from({ length: Math.min(5, totalPages) }, (_, idx) => {
+                    let pageNum = idx + 1;
+                    if (totalPages > 5 && safeCurrentPage > 3) {
+                      pageNum = safeCurrentPage - 2 + idx;
+                      if (pageNum > totalPages) pageNum = totalPages - 4 + idx;
+                    }
+                    if (pageNum < 1 || pageNum > totalPages) return null;
+                    return (
+                      <button
+                        key={pageNum}
+                        type="button"
+                        onClick={() => setCurrentPage(pageNum)}
+                        className={`w-7 h-7 rounded-lg transition text-xs font-bold cursor-pointer ${
+                          safeCurrentPage === pageNum
+                            ? 'bg-emerald-600 text-white shadow-2xs'
+                            : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  type="button"
+                  disabled={safeCurrentPage >= totalPages}
+                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                  className="px-2.5 py-1 bg-white border border-slate-300 rounded-lg hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed transition font-bold cursor-pointer"
+                >
+                  التالي
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <BarcodeScannerModal

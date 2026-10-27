@@ -26,7 +26,8 @@ import {
   BarChart3, 
   Settings, 
   ArrowRight,
-  Clock
+  Clock,
+  Briefcase
 } from 'lucide-react';
 
 const MainContent: React.FC = () => {
@@ -192,6 +193,7 @@ const MainContent: React.FC = () => {
       case 'shifts': return 'إدارة وسجل الشفتات والورديات';
       case 'customers': return 'حسابات الديون والعملاء';
       case 'reports': return 'الأرباح والتقارير المالية';
+      case 'sales-reps': return 'مبيعات وأرباح المندوبين';
       case 'settings': return 'الإعدادات العامة والنسخ الاحتياطي';
       default: return '';
     }
@@ -213,9 +215,7 @@ const MainContent: React.FC = () => {
       <main className={`no-print flex-1 w-full mx-auto ${
         isMobile 
           ? 'max-w-2xl px-2.5 sm:px-4 py-3 sm:py-4' 
-          : isFullComputerMode 
-          ? 'max-w-[1600px] px-3 sm:px-6 py-3 sm:py-4' 
-          : 'max-w-7xl px-4 sm:px-6 lg:px-8 py-5'
+          : 'max-w-[1650px] px-3 sm:px-6 py-3 sm:py-4'
       }`}>
         
         {isFullComputerMode && activeTab !== 'pos' && (
@@ -267,41 +267,57 @@ const MainContent: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setActiveTab('shifts')}
-                  className="px-2.5 py-1 rounded-lg hover:bg-slate-100 text-slate-700 font-semibold transition flex items-center gap-1 cursor-pointer"
+                  className="px-2.5 py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold transition flex items-center gap-1 cursor-pointer"
                   title="عرض سجل الشفتات وساعات العمل"
                 >
-                  <Clock className="w-3.5 h-3.5 text-indigo-500" />
+                  <Clock className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />
                   <span>الشفتات</span>
                   {activeShift && (
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                   )}
                 </button>
               )}
+              {!!settings.enableSalesReps && (hasPermission('canManageSalesReps') || sessionRole === 'admin' || sessionRole === 'supervisor') && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('sales-reps')}
+                  className="px-2.5 py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold transition flex items-center gap-1 cursor-pointer"
+                  title="عرض مبيعات وأرباح المندوبين"
+                >
+                  <Briefcase className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400" />
+                  <span>المندوبين</span>
+                  {settings.salesReps && settings.salesReps.length > 0 && (
+                    <span className="text-[10px] px-1.5 py-0.2 bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 rounded font-bold">
+                      {settings.salesReps.length}
+                    </span>
+                  )}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setActiveTab('customers')}
-                className="px-2.5 py-1 rounded-lg hover:bg-slate-100 text-slate-700 font-semibold transition flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold transition flex items-center gap-1 cursor-pointer"
                 title="عرض حسابات ديون العملاء والبيع الآجل"
               >
-                <Users className="w-3.5 h-3.5 text-slate-500" />
+                <Users className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
                 <span>الديون والعملاء</span>
               </button>
               <button
                 type="button"
                 onClick={() => setActiveTab('reports')}
-                className="px-2.5 py-1 rounded-lg hover:bg-slate-100 text-slate-700 font-semibold transition flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold transition flex items-center gap-1 cursor-pointer"
                 title="عرض الأرباح والتقارير المالية"
               >
-                <BarChart3 className="w-3.5 h-3.5 text-slate-500" />
+                <BarChart3 className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
                 <span>التقارير</span>
               </button>
               <button
                 type="button"
                 onClick={() => setActiveTab('settings')}
-                className="px-2.5 py-1 rounded-lg hover:bg-slate-100 text-slate-700 font-semibold transition flex items-center gap-1 cursor-pointer"
+                className="px-2.5 py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold transition flex items-center gap-1 cursor-pointer"
                 title="فتح إعدادات النظام والنسخ الاحتياطي"
               >
-                <Settings className="w-3.5 h-3.5 text-slate-500" />
+                <Settings className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
                 <span>الإعدادات</span>
               </button>
             </div>

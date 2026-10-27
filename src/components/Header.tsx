@@ -68,7 +68,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenAuth }) => {
 
   return (
     <header className="no-print bg-[#091528] dark:bg-[#060e1d] text-white border-b border-slate-800 dark:border-amber-500/20 shadow-md">
-      <div className="max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-3 space-y-3">
+      <div className={`${isMobile ? 'max-w-2xl px-2.5 sm:px-4' : 'max-w-[1650px] px-3 sm:px-6'} w-full mx-auto py-3 space-y-3`}>
         
         {/* Main Row: اسم المحل والتحكم بدون أي تداخل أو قص للكلمات */}
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">

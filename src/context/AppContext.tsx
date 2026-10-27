@@ -794,6 +794,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // 2. الاشتراك اللحظي في مستند المتجر
     const storeSub = subscribeToDocument('stores', storeDocId, (newData) => {
       if (!newData) return;
+      // تجاهل الارتداد الذاتي إذا كان التحديث قادماً من نفس هذا الجهاز للتو لمنع تجميد الواجهة والتهنيج
+      if (newData.lastSavedByClient && newData.lastSavedByClient === currentSessionId) {
+        setIsCloudConnected(true);
+        setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
+        return;
+      }
       if (Array.isArray(newData.products)) {
         setProducts(newData.products);
         try { localStorage.setItem('cached_pos_products', JSON.stringify(newData.products)); } catch {}
@@ -831,29 +837,77 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       storeSub.unsubscribe();
       userSub.unsubscribe();
     };
-  }, [currentUser]);
+  }, [currentUser, currentSessionId]);
 
-  // دالة الحفظ الموحدة للمتجر السحابي
-  const saveStoreToCloud = async (overridePartial?: Partial<{
-    products: Product[];
-    customers: Customer[];
-    invoices: Invoice[];
-    shifts: Shift[];
-    settings: StoreSettings;
-  }>) => {
+  // مؤقت التجميع الذكي للحفظ في السحابة في الخلفية دون حظر الواجهة
+  const pendingCloudSyncRef = useRef<{
+    timer: any;
+    override: Partial<{
+      products: Product[];
+      customers: Customer[];
+      invoices: Invoice[];
+      shifts: Shift[];
+      settings: StoreSettings;
+    }>;
+  }>({ timer: null, override: {} });
+
+  // دالة الحفظ الموحدة للمتجر السحابي مع جدولة ذكية غير حاجزة لواجهة المستخدم
+  const saveStoreToCloud = async (
+    overridePartial?: Partial<{
+      products: Product[];
+      customers: Customer[];
+      invoices: Invoice[];
+      shifts: Shift[];
+      settings: StoreSettings;
+    }>,
+    immediate: boolean = false
+  ) => {
     if (!currentUser?.uid) return;
     const storeDocId = `store_${currentUser.uid}`;
-    const payload = sanitizePayload({
-      products: overridePartial?.products ?? products,
-      customers: overridePartial?.customers ?? customers,
-      invoices: overridePartial?.invoices ?? invoices,
-      shifts: overridePartial?.shifts ?? shifts,
-      settings: overridePartial?.settings ?? settings,
-      updatedAt: new Date().toISOString()
-    });
 
-    await setDocument('stores', storeDocId, payload);
-    setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
+    if (overridePartial) {
+      Object.assign(pendingCloudSyncRef.current.override, overridePartial);
+    }
+
+    const executeUpload = async () => {
+      if (!currentUser?.uid) return;
+      const merged = { ...pendingCloudSyncRef.current.override };
+      pendingCloudSyncRef.current.override = {};
+
+      try {
+        const payload = sanitizePayload({
+          products: merged.products ?? products,
+          customers: merged.customers ?? customers,
+          invoices: merged.invoices ?? invoices,
+          shifts: merged.shifts ?? shifts,
+          settings: merged.settings ?? settings,
+          lastSavedByClient: currentSessionId,
+          updatedAt: new Date().toISOString()
+        });
+
+        await setDocument('stores', storeDocId, payload);
+        setIsCloudConnected(true);
+        setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
+      } catch (err) {
+        console.warn('Background cloud save notice:', err);
+      }
+    };
+
+    if (immediate) {
+      if (pendingCloudSyncRef.current.timer) {
+        clearTimeout(pendingCloudSyncRef.current.timer);
+        pendingCloudSyncRef.current.timer = null;
+      }
+      return executeUpload();
+    }
+
+    if (pendingCloudSyncRef.current.timer) {
+      clearTimeout(pendingCloudSyncRef.current.timer);
+    }
+    pendingCloudSyncRef.current.timer = setTimeout(() => {
+      pendingCloudSyncRef.current.timer = null;
+      executeUpload();
+    }, 450);
   };
 
   const syncNow = async () => {
@@ -861,7 +915,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsSyncing(true);
     setSyncNotice('جاري المزامنة...');
     try {
-      await saveStoreToCloud();
+      await saveStoreToCloud(undefined, true);
       setIsCloudConnected(true);
       setSyncNotice('✅ اكتملت المزامنة بنجاح.');
       setTimeout(() => setSyncNotice(null), 3500);
@@ -1103,7 +1157,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       showRepOnInvoice,
     };
 
-    items.forEach(i => adjustStock(i.productId, -(i.deductedPieces ?? i.quantity)));
+    // خصم كميات كافة المواد دفعة واحدة بحركة ذرية سريعة لمنع التهنيج
+    const deductionsMap = new Map<string, number>();
+    items.forEach(i => {
+      const delta = (i.deductedPieces ?? i.quantity);
+      deductionsMap.set(i.productId, (deductionsMap.get(i.productId) || 0) + delta);
+    });
+
+    const updatedProducts = products.map(p => {
+      const deduct = deductionsMap.get(p.id);
+      if (deduct && deduct > 0) {
+        return {
+          ...p,
+          stock: Math.max(0, Math.round((p.stock - deduct) * 1000) / 1000),
+          updatedAt: now,
+        };
+      }
+      return p;
+    });
+    setProducts(updatedProducts);
+    try { localStorage.setItem('cached_pos_products', JSON.stringify(updatedProducts)); } catch {}
+
     const updatedInvoices = [newInv, ...invoices];
     setInvoices(updatedInvoices);
     try { localStorage.setItem('cached_pos_invoices', JSON.stringify(updatedInvoices)); } catch {}
@@ -1129,7 +1203,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       } catch {}
     }
 
-    saveStoreToCloud({ invoices: updatedInvoices, shifts: updatedShiftsList });
+    saveStoreToCloud({ 
+      products: updatedProducts,
+      invoices: updatedInvoices, 
+      shifts: updatedShiftsList 
+    });
     return newInv;
   };
 

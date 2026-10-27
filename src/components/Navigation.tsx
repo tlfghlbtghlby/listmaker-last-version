@@ -87,9 +87,11 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, onSelectTab }
 
   const navItems = allNavItems.filter((item) => item.permitted);
 
+  const isMobile = settings.deviceMode === 'mobile';
+
   return (
     <nav className="no-print bg-white dark:bg-[#0b1728] border-b border-slate-200 dark:border-slate-800/80 sticky top-0 z-20 shadow-xs transition-colors">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className={`${isMobile ? 'max-w-2xl px-2.5 sm:px-4' : 'max-w-[1650px] px-3 sm:px-6'} mx-auto`}>
         <div className="flex items-center space-x-1 space-x-reverse overflow-x-auto py-2 scrollbar-none">
           {navItems.map((item) => {
             const isActive = activeTab === item.id;
