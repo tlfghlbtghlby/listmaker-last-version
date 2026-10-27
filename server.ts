@@ -9,11 +9,11 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const portArgIndex = process.argv.indexOf('--port');
 const portFromArg = portArgIndex !== -1 && process.argv[portArgIndex + 1] ? parseInt(process.argv[portArgIndex + 1], 10) : null;
-const PORT = Number(process.env.PORT) || portFromArg || 3000;
+const PORT = portFromArg || (process.env.NODE_ENV === 'production' && process.env.PORT ? Number(process.env.PORT) : 3000);
 
 const hostArgIndex = process.argv.indexOf('--host');
-const hostFromArg = hostArgIndex !== -1 && process.argv[hostArgIndex + 1] ? process.argv[hostArgIndex + 1] : '0.0.0.0';
-const HOST = process.env.HOST || hostFromArg || '0.0.0.0';
+const hostFromArg = hostArgIndex !== -1 && process.argv[hostArgIndex + 1] ? process.argv[hostArgIndex + 1] : null;
+const HOST = hostFromArg || process.env.HOST || '0.0.0.0';
 
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err);
@@ -766,7 +766,7 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production' && !process.env.PREVIEW_MODE) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);

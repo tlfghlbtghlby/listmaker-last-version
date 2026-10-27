@@ -34,8 +34,8 @@ import { findDuplicateGroups } from '../utils/duplicateCleaner';
 import { mergeProducts, mergeInvoices } from '../utils/syncEngine';
 import pkg from '../../package.json';
 
-// قراءة الإصدار تلقائياً من package.json
-export const CURRENT_APP_VERSION = pkg.version;
+// قراءة الإصدار تلقائياً من package.json مع حماية
+export const CURRENT_APP_VERSION = (pkg as any)?.version || '2.0.0';
 
 // دالة مقارنة الإصدارات بدقة
 export const isVersionOutdated = (current: string, minRequired: string): boolean => {
@@ -775,7 +775,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     const enforceMinimumVersion = (minVersion: string, message?: string) => {
       if (minVersion && isVersionOutdated(CURRENT_APP_VERSION, minVersion)) {
-        alert(message || `تم إيقاف هذا الإصدار (${CURRENT_APP_VERSION}). يرجى تحميل وتثبيت التحديث الجديد.`);
+        const msg = message || `تم إيقاف هذا الإصدار (${CURRENT_APP_VERSION}). يرجى تحميل وتثبيت التحديث الجديد.`;
+        try { alert(msg); } catch (e) { console.warn(msg); }
         logout();
         return true;
       }
@@ -1993,7 +1994,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (data && !error) {
         if (isVersionOutdated(CURRENT_APP_VERSION, data.min_required_version)) {
           const msg = data.update_message || `عذراً، إصدار البرنامج لديك (${CURRENT_APP_VERSION}) قديم جداً وتم إيقافه. يرجى تثبيت الإصدار الجديد.`;
-          alert(msg);
+          try { alert(msg); } catch (e) { console.warn(msg); }
           return { success: false, error: msg };
         }
       }

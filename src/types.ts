@@ -85,6 +85,7 @@ export interface SalesRep {
 
 export interface Invoice {
   id: string;
+  ownerUid?: string;
   invoiceNumber: string; // رقم القائمة
   type: SaleType; // مباشر أم آجل
   customerId?: string;
@@ -102,6 +103,8 @@ export interface Invoice {
   status: InvoiceStatus;
   notes?: string;
   date: string; // تاريخ ووقت الإنشاء
+  createdAt?: string;
+  updatedAt?: string;
   totalCost: number; // تكلفة البضاعة المباعة
   netProfit: number; // صافي الربح المحقق (total - totalCost - discount)
   shiftId?: string; // معرف الشفت المرتبط بهذه الفاتورة
