@@ -24,39 +24,76 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'dist/index.html'));
 }
 
-// 1. استدعاء قائمة الطابعات المثبتة في الويندوز للاختيار منها داخل الإعدادات لمرة واحدة
+// 1. استدعاء قائمة الطابعات
 ipcMain.handle('get-printers', async () => {
   if (!mainWindow) return [];
   return await mainWindow.webContents.getPrintersAsync();
 });
 
-// 2. دالة الطباعة اللحظية المباشرة لطابعة الفواتير (تمنع خروج الورق الفارغ غير المحدود)
-const handlePrint = (event, options = {}) => {
-  const win = BrowserWindow.fromWebContents(event.sender);
-  if (!win) return Promise.resolve(false);
+// 2. دالة الطباعة الصامتة الذكية
+const handlePrint = async (event, options = {}) => {
+  return new Promise(async (resolve) => {
+    try {
+      const isA4 = options.pageSize === 'A4';
+      
+      // إذا تم إرسال محتوى الفاتورة كـ HTML، ننشئ نافذة خلفية لحساب الطول والطباعة
+      if (options.html) {
+        let printWin = new BrowserWindow({
+          show: false,
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+          },
+        });
 
-  const isA4 = options.pageSize === 'A4';
-  const printOptions = {
-    silent: true,            // طباعة صامتة فورية دون نوافذ
-    printBackground: true,   // طباعة الرسوم والتصميم بدقة
-    deviceName: options.deviceName || '', // توجيه مباشر للطابعة بالاسم
-    margins: { marginType: 'default' },
-  };
+        await printWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(options.html)}`);
 
-  if (isA4) {
-    printOptions.pageSize = 'A4';
-  } else {
-    // تحديد عرض 72mm مع طول ديناميكي يتوقف مع نهاية الإيصال بدلاً من 297000 (29.7 سم)
-    printOptions.pageSize = { width: 72000, height: options.heightMicrons || 80000 };
-  }
+        // حساب الارتفاع الفعلي للمحتوى بدقة لمنع قطع الفاتورة أو إخراج ورق فارغ
+        const contentHeightPx = await printWin.webContents.executeJavaScript('document.body.scrollHeight');
+        // تحويل البكسل (96 DPI) إلى ميكرون مع إضافة هامش أمان بسيط (5mm)
+        const computedHeightMicrons = Math.ceil((contentHeightPx / 96) * 25400) + 5000;
 
-  return new Promise((resolve) => {
-    win.webContents.print(printOptions, (success, failureReason) => {
-      if (!success) {
-        console.warn('فشل أمر الطباعة الصامتة:', failureReason);
+        const printOptions = {
+          silent: true,
+          printBackground: true,
+          deviceName: options.deviceName || '',
+          margins: { marginType: 'none' },
+          pageSize: isA4 ? 'A4' : { 
+            width: 72000, 
+            height: computedHeightMicrons 
+          },
+        };
+
+        printWin.webContents.print(printOptions, (success, failureReason) => {
+          if (!success) console.warn('فشل أمر الطباعة:', failureReason);
+          printWin.destroy();
+          resolve(success);
+        });
+      } else {
+        // طباعة مباشرة من النافذة الحالية إذا لم يُمرر HTML
+        const win = BrowserWindow.fromWebContents(event.sender);
+        if (!win) return resolve(false);
+
+        const printOptions = {
+          silent: true,
+          printBackground: true,
+          deviceName: options.deviceName || '',
+          margins: { marginType: 'default' },
+          pageSize: isA4 ? 'A4' : { 
+            width: 72000, 
+            height: options.heightMicrons || 80000 
+          },
+        };
+
+        win.webContents.print(printOptions, (success, failureReason) => {
+          if (!success) console.warn('فشل أمر الطباعة:', failureReason);
+          resolve(success);
+        });
       }
-      resolve(success);
-    });
+    } catch (err) {
+      console.error('خطأ أثناء معالجة الطباعة:', err);
+      resolve(false);
+    }
   });
 };
 
