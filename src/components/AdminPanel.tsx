@@ -6,9 +6,10 @@ import {
   updateClientAccount,
   deleteClientAccount,
   updateClientSubscription,
+  migrateAllUsersFromFirebase,
   CreateClientInput,
   UpdateClientInput
-} from '../firebase';
+} from '../supabase';
 import { UserProfile, ADMIN_EMAIL } from '../types';
 import { 
   ShieldCheck, 
@@ -43,6 +44,7 @@ export const AdminPanel: React.FC = () => {
   const [clients, setClients] = useState<UserProfile[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isMigrating, setIsMigrating] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
   // Form fields for new client
@@ -65,11 +67,11 @@ export const AdminPanel: React.FC = () => {
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [actionLoadingUid, setActionLoadingUid] = useState<string | null>(null);
 
-  // Delete modal state (100% in-app, avoids iframe window.confirm blocking)
+  // Delete modal state
   const [clientToDelete, setClientToDelete] = useState<UserProfile | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // Password visibility map (default: all passwords visible)
+  // Password visibility map
   const [hiddenPasswords, setHiddenPasswords] = useState<Record<string, boolean>>({});
   const [copiedUid, setCopiedUid] = useState<string | null>(null);
 
@@ -79,7 +81,7 @@ export const AdminPanel: React.FC = () => {
     setIsLoading(true);
     try {
       const list = await loadAllClientAccounts();
-      setClients(list);
+      setClients(list as UserProfile[]);
     } catch (e: any) {
       console.error("Error loading clients:", e);
     } finally {
@@ -90,6 +92,33 @@ export const AdminPanel: React.FC = () => {
   useEffect(() => {
     fetchClients();
   }, []);
+
+  const handleMigrateFromFirebase = async () => {
+    setIsMigrating(true);
+    setFeedback(null);
+    try {
+      const res = await migrateAllUsersFromFirebase();
+      if (res.success) {
+        setFeedback({
+          type: 'success',
+          message: `✅ تم ترحيل وتأمين ${res.count} حساب بنجاح إلى قاعدة بيانات Supabase!`
+        });
+        await fetchClients();
+      } else {
+        setFeedback({
+          type: 'error',
+          message: res.error || 'تعذر استيراد الحسابات من Firebase'
+        });
+      }
+    } catch (err: any) {
+      setFeedback({
+        type: 'error',
+        message: err.message || 'حدث خطأ أثناء ترحيل الحسابات'
+      });
+    } finally {
+      setIsMigrating(false);
+    }
+  };
 
   const handleCreateClient = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,7 +151,6 @@ export const AdminPanel: React.FC = () => {
         expiresAt = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString();
         subType = 'yearly';
       } else {
-        // 3-day trial by default
         expiresAt = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString();
         subType = 'trial';
       }
@@ -137,7 +165,6 @@ export const AdminPanel: React.FC = () => {
 
       const newClient = await createClientAccount(input);
 
-      // If custom initial plan (not default 3-day trial)
       if (initialPlan !== 'trial3') {
         await updateClientSubscription(newClient.uid, {
           action: isPerm ? 'set_permanent' : 'set_custom_date',
@@ -148,12 +175,11 @@ export const AdminPanel: React.FC = () => {
 
       setFeedback({
         type: 'success',
-        message: `تم إنشاء وتفعيل حساب الزبون (${newClient.displayName}) بنجاح! الصلاحية: ${
+        message: `تم إنشاء وتفعيل حساب الزبون (${newClient.displayName}) بنجاح عبر Supabase! الصلاحية: ${
           isPerm ? '⭐ حساب دائمي مدى الحياة' : initialPlan === 'yearly' ? 'باقة سنوية (365 يوم)' : initialPlan === 'monthly' ? 'باقة شهرية (30 يوم)' : 'فترة تجريبية 3 أيام'
         } · اسم الدخول: ${cleanUsername} · الرمز: ${password}`
       });
 
-      // Clear form
       setUsername('');
       setDisplayName('');
       setStoreName('');
@@ -161,7 +187,6 @@ export const AdminPanel: React.FC = () => {
       setPassword('');
       setInitialPlan('trial3');
 
-      // Refresh clients list
       fetchClients();
     } catch (err: any) {
       console.error("Error creating client:", err);
@@ -184,7 +209,6 @@ export const AdminPanel: React.FC = () => {
     setEditIsActive(client.isActive !== false);
     setEditIsPermanent(client.isPermanent === true);
     
-    // Format expiration date for datetime-local input
     if (client.trialExpiresAt) {
       try {
         const d = new Date(client.trialExpiresAt);
@@ -222,7 +246,6 @@ export const AdminPanel: React.FC = () => {
 
       await updateClientAccount(updates);
 
-      // Save subscription changes
       if (editIsPermanent) {
         await updateClientSubscription(editingClient.uid, {
           action: 'set_permanent',
@@ -238,7 +261,7 @@ export const AdminPanel: React.FC = () => {
 
       setFeedback({
         type: 'success',
-        message: `تم تحديث بيانات حساب الزبون (${updates.displayName}) وصلاحية الاشتراك بنجاح.`
+        message: `تم تحديث بيانات حساب الزبون (${updates.displayName}) وصلاحية الاشتراك بنجاح في Supabase.`
       });
 
       setEditingClient(null);
@@ -251,7 +274,6 @@ export const AdminPanel: React.FC = () => {
     }
   };
 
-  // Quick 1-click extension by days
   const handleQuickExtend = async (client: UserProfile, days: number) => {
     setActionLoadingUid(client.uid);
     try {
@@ -275,7 +297,6 @@ export const AdminPanel: React.FC = () => {
     }
   };
 
-  // Quick 1-click make permanent
   const handleQuickSetPermanent = async (client: UserProfile) => {
     setActionLoadingUid(client.uid);
     try {
@@ -300,7 +321,6 @@ export const AdminPanel: React.FC = () => {
   };
 
   const handleDeleteClient = (client: UserProfile) => {
-    // Open in-app confirmation modal (eliminates blocked window.confirm in iframes)
     setClientToDelete(client);
   };
 
@@ -312,7 +332,7 @@ export const AdminPanel: React.FC = () => {
       await deleteClientAccount(clientToDelete.uid);
       setFeedback({
         type: 'success',
-        message: `تم حذف حساب الزبون (${clientToDelete.displayName || clientToDelete.username}) ومخزنه نهائياً بنجاح.`
+        message: `تم حذف حساب الزبون (${clientToDelete.displayName || clientToDelete.username}) ومستنداته من Supabase نهائياً.`
       });
       setClients(prev => prev.filter(c => c.uid !== clientToDelete.uid));
       setClientToDelete(null);
@@ -392,15 +412,30 @@ export const AdminPanel: React.FC = () => {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={fetchClients}
-          disabled={isLoading}
-          className="self-start sm:self-center px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold border border-slate-700 transition flex items-center gap-1.5 cursor-pointer"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-emerald-400' : ''}`} />
-          <span>تحديث قائمة الزبائن</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-center">
+          {/* زر ترحيل الحسابات من فايربيس إلى سوبابيس */}
+          <button
+            type="button"
+            onClick={handleMigrateFromFirebase}
+            disabled={isMigrating || isLoading}
+            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-md"
+            title="سحب كافة الحسابات والمشتركين من Firebase وحفظها في Supabase"
+          >
+            <Zap className={`w-3.5 h-3.5 ${isMigrating ? 'animate-pulse text-amber-300' : ''}`} />
+            <span>{isMigrating ? 'جاري الترحيل...' : 'ترحيل الحسابات من Firebase الآن'}</span>
+          </button>
+
+          {/* زر التحديث */}
+          <button
+            type="button"
+            onClick={fetchClients}
+            disabled={isLoading || isMigrating}
+            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold border border-slate-700 transition flex items-center gap-1.5 cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin text-emerald-400' : ''}`} />
+            <span>تحديث قائمة الزبائن</span>
+          </button>
+        </div>
       </div>
 
       {/* Feedback Alert */}
@@ -429,12 +464,11 @@ export const AdminPanel: React.FC = () => {
           <span>إنشاء حساب زبون جديد (إصدار ترخيص مستخدم)</span>
         </div>
         <p className="text-xs text-slate-400">
-          يتم إنشاء الحساب عبر تطبيق فرعي مؤقت (Secondary App) وتفعيله فورياً في أقل من ثانية دون التأثير على جلسة الأدمن.
+          يتم حفظ الحساب وتفعيله فورياً عبر قاعدة بيانات Supabase دون قيود وبشكل مباشر.
         </p>
 
         <form onSubmit={handleCreateClient} className="space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-            {/* Username */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
                 اسم المستخدم للزبون <span className="text-rose-400">*</span>
@@ -452,7 +486,6 @@ export const AdminPanel: React.FC = () => {
               </div>
             </div>
 
-            {/* Password */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
                 رمز الحساب (كلمة المرور) <span className="text-rose-400">*</span>
@@ -471,7 +504,6 @@ export const AdminPanel: React.FC = () => {
               </div>
             </div>
 
-            {/* Store Name */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
                 اسم المحل أو المخزن
@@ -488,7 +520,6 @@ export const AdminPanel: React.FC = () => {
               </div>
             </div>
 
-            {/* Client Display Name */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
                 اسم صاحب المحل / الزبون
@@ -502,7 +533,6 @@ export const AdminPanel: React.FC = () => {
               />
             </div>
 
-            {/* Phone Number */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
                 رقم الهاتف (اختياري)
@@ -520,7 +550,6 @@ export const AdminPanel: React.FC = () => {
               </div>
             </div>
 
-            {/* Duration / Initial Plan */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
                 صلاحية الحساب الأولية
@@ -537,7 +566,6 @@ export const AdminPanel: React.FC = () => {
               </select>
             </div>
 
-            {/* Submit Button */}
             <div className="flex items-end sm:col-span-2 md:col-span-3">
               <button
                 type="submit"
@@ -599,7 +627,7 @@ export const AdminPanel: React.FC = () => {
               {filteredClients.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="py-8 text-center text-slate-400">
-                    لا توجد حسابات زبائن مسجلة بعد. استخدم النموذج أعلاه لإنشاء حساب جديد.
+                    لا توجد حسابات زبائن مسجلة بعد. استخدم النموذج أعلاه لإنشاء حساب جديد أو اضغط زر الترحيل لنقل حساباتك القديمة.
                   </td>
                 </tr>
               ) : (
@@ -625,7 +653,7 @@ export const AdminPanel: React.FC = () => {
                         {client.phone || '-'}
                       </td>
                       
-                      {/* Password Field Column - Visible for Admin */}
+                      {/* Password Field Column */}
                       <td className="py-2.5 px-3 text-center">
                         {hasPassword ? (
                           <div className="inline-flex items-center gap-1.5 bg-slate-900 border border-slate-700/80 rounded-lg px-2.5 py-1 shadow-xs">
@@ -637,7 +665,6 @@ export const AdminPanel: React.FC = () => {
                               {isHidden ? '••••••••' : client.password}
                             </span>
                             
-                            {/* Toggle Show/Hide Icon */}
                             <button
                               type="button"
                               onClick={() => togglePasswordVisibility(client.uid)}
@@ -647,7 +674,6 @@ export const AdminPanel: React.FC = () => {
                               {isHidden ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
                             </button>
 
-                            {/* Copy Password Button */}
                             <button
                               type="button"
                               onClick={() => copyPasswordToClipboard(client.password!, client.displayName, client.uid)}
@@ -666,7 +692,7 @@ export const AdminPanel: React.FC = () => {
                         )}
                       </td>
 
-                      {/* Subscription & Trial Column with GM Quick Controls */}
+                      {/* Subscription & Trial Column */}
                       <td className="py-2.5 px-3 text-center">
                         <div className="flex flex-col items-center gap-1">
                           {client.isPermanent ? (
@@ -704,7 +730,6 @@ export const AdminPanel: React.FC = () => {
                             })()
                           )}
 
-                          {/* Quick GM Extension Controls */}
                           <div className="flex items-center gap-1 mt-0.5">
                             <button
                               type="button"
@@ -760,7 +785,6 @@ export const AdminPanel: React.FC = () => {
 
                       <td className="py-2.5 px-3 text-center">
                         <div className="flex items-center justify-center gap-1.5">
-                          {/* Edit Client Button */}
                           <button
                             type="button"
                             onClick={() => openEditModal(client)}
@@ -770,7 +794,6 @@ export const AdminPanel: React.FC = () => {
                             <Pencil className="w-3.5 h-3.5" />
                           </button>
 
-                          {/* Toggle Active Button */}
                           <button
                             type="button"
                             onClick={() => handleToggleStatus(client)}
@@ -784,7 +807,6 @@ export const AdminPanel: React.FC = () => {
                             <Power className="w-3.5 h-3.5" />
                           </button>
 
-                          {/* Delete Client Button */}
                           {client.role === 'admin' || client.uid === 'admin_master_001' || client.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase() ? (
                             <span 
                               className="p-1.5 rounded-lg text-xs font-bold bg-emerald-950/40 text-emerald-400 border border-emerald-800/40"
@@ -813,7 +835,7 @@ export const AdminPanel: React.FC = () => {
         </div>
       </div>
 
-      {/* Delete Confirmation In-App Modal (Works 100% reliably in sandboxed iframes) */}
+      {/* Delete Confirmation Modal */}
       {clientToDelete && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4" dir="rtl">
           <div className="bg-slate-900 border border-rose-500/50 rounded-2xl w-full max-w-md p-6 shadow-2xl space-y-4">
@@ -903,7 +925,6 @@ export const AdminPanel: React.FC = () => {
 
             <form onSubmit={handleSaveEdit} className="space-y-3.5">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {/* Display Name */}
                 <div>
                   <label className="block text-xs font-bold text-slate-300 mb-1">
                     اسم صاحب المحل / الزبون
@@ -917,7 +938,6 @@ export const AdminPanel: React.FC = () => {
                   />
                 </div>
 
-                {/* Store Name */}
                 <div>
                   <label className="block text-xs font-bold text-slate-300 mb-1">
                     اسم المحل أو المخزن
@@ -930,7 +950,6 @@ export const AdminPanel: React.FC = () => {
                   />
                 </div>
 
-                {/* Phone */}
                 <div>
                   <label className="block text-xs font-bold text-slate-300 mb-1">
                     رقم الهاتف
@@ -944,7 +963,6 @@ export const AdminPanel: React.FC = () => {
                   />
                 </div>
 
-                {/* Current / New Password */}
                 <div>
                   <label className="block text-xs font-bold text-slate-300 mb-1 flex items-center justify-between">
                     <span>رمز الحساب (كلمة المرور)</span>
@@ -986,7 +1004,7 @@ export const AdminPanel: React.FC = () => {
                   <div className="space-y-2 pt-1 border-t border-slate-700/60">
                     <div>
                       <label className="block text-[11px] font-bold text-slate-300 mb-1">
-                        تاريخ ووقت انتهاء الصلاحية المحدد (اليوم / الشهر / السنة):
+                        تاريخ ووقت انتهاء الصلاحية المحدد:
                       </label>
                       <input
                         type="datetime-local"
