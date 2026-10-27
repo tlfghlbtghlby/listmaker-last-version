@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { loginWithEmailOrUsername } from '../firebase';
+import { loginWithEmailOrUsername } from '../supabase';
 import { useApp } from '../context/AppContext';
 import { 
   Lock, 
@@ -72,7 +72,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onContinueAsGuest
       console.warn("Login attempt notice:", err?.message || err);
       let msg = err.message || 'بيانات الدخول غير صحيحة. يرجى التحقق من اسم المستخدم وكلمة المرور.';
       if (msg.includes('معطل') || msg.includes('تعطيل') || msg.includes('حذف') || msg.includes('تجريبية') || msg.includes('اشتراك')) {
-        // Keep the exact explanatory message
+        // رسائل التعطيل أو انتهاء الصلاحية تظهر كما هي
       } else if (
         err.code === 'auth/invalid-credential' || 
         err.code === 'auth/user-not-found' || 
@@ -131,7 +131,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onContinueAsGuest
               <h2 className="text-base font-extrabold text-white">تسجيل الدخول للنظام</h2>
             </div>
             <span className="text-[11px] font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2.5 py-0.5 rounded-full">
-              وصول مباشر
+              وصول سحابي مباشر
             </span>
           </div>
 
@@ -160,10 +160,9 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onContinueAsGuest
             </div>
           )}
 
-          {/* Login Form: Supports Username, Phone, Store Name, or Email */}
+          {/* Login Form */}
           <form onSubmit={handleLogin} className="space-y-4">
             
-            {/* Input 1: Identifier */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1.5">
                 اسم المستخدم / البريد الإلكتروني / رقم الهاتف
@@ -182,7 +181,6 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onContinueAsGuest
               </div>
             </div>
 
-            {/* Input 2: Password */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1.5">
                 كلمة المرور
@@ -209,7 +207,6 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onContinueAsGuest
               </div>
             </div>
 
-            {/* Login Action Button */}
             <button
               type="submit"
               disabled={isLoading}
@@ -231,7 +228,6 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess, onContinueAsGuest
 
         </div>
 
-        {/* Footer */}
         <div className="text-center text-xs text-slate-400">
           نظام المبيعات والمخزن السحابي · متاح لجميع الأجهزة والمنصات
         </div>
