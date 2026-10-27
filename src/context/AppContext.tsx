@@ -92,6 +92,7 @@ interface AppContextType {
   addBulkProducts: (items: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>[], onProgress?: (curr: number, total: number) => void) => Promise<{ success: boolean; count: number; products: Product[] }>;
   updateProduct: (id: string, updates: Partial<Product>) => void;
   deleteProduct: (id: string) => void;
+  batchDeleteProducts: (productIdsToDelete: string[], stockIncrements?: Record<string, number>) => Promise<{ success: boolean; deletedCount: number; error?: string }>;
   adjustStock: (id: string, delta: number) => void;
   addCustomer: (customer: Omit<Customer, 'id' | 'createdAt' | 'totalDebt'> & { initialDebt?: number }) => Customer;
   updateCustomer: (id: string, updates: Partial<Customer>) => void;
@@ -934,6 +935,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setProducts(updated);
     try { localStorage.setItem('cached_pos_products', JSON.stringify(updated)); } catch {}
     saveStoreToCloud({ products: updated });
+  };
+
+  const batchDeleteProducts = async (
+    productIdsToDelete: string[],
+    stockIncrements?: Record<string, number>
+  ): Promise<{ success: boolean; deletedCount: number; error?: string }> => {
+    if (!productIdsToDelete || productIdsToDelete.length === 0) {
+      return { success: true, deletedCount: 0 };
+    }
+
+    try {
+      const deleteSet = new Set(productIdsToDelete);
+      const increments = stockIncrements || {};
+
+      const updatedProducts = products
+        .filter(p => !deleteSet.has(p.id))
+        .map(p => {
+          const inc = increments[p.id];
+          if (inc && inc > 0) {
+            return {
+              ...p,
+              stock: Math.max(0, Math.round(((p.stock || 0) + inc) * 1000) / 1000),
+              updatedAt: new Date().toISOString()
+            };
+          }
+          return p;
+        });
+
+      const deletedCount = products.length - updatedProducts.length;
+
+      setProducts(updatedProducts);
+      try {
+        localStorage.setItem('cached_pos_products', JSON.stringify(updatedProducts));
+      } catch (e) {
+        console.warn('Failed to cache products to localStorage', e);
+      }
+
+      try {
+        await saveStoreToCloud({ products: updatedProducts });
+      } catch (cloudErr) {
+        console.warn('Batch delete saved locally, cloud sync pending:', cloudErr);
+      }
+      return { success: true, deletedCount };
+    } catch (err: any) {
+      console.error('Error in batchDeleteProducts:', err);
+      return { success: false, deletedCount: 0, error: err?.message || 'حدث خطأ أثناء حذف المواد' };
+    }
   };
 
   const adjustStock = (id: string, delta: number) => {
@@ -1789,7 +1837,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addPresetShift, updatePresetShift, deletePresetShift,
         addSupervisor, updateSupervisor, deleteSupervisor,
         activeSupervisorId, activeSupervisorName,
-        addProduct, addBulkProducts, updateProduct, deleteProduct, adjustStock,
+        addProduct, addBulkProducts, updateProduct, deleteProduct, batchDeleteProducts, adjustStock,
         addCustomer, updateCustomer, deleteCustomer,
         createInvoice, deleteInvoice, returnInvoice, returnPartialInvoice, applyBulkPriceAdjustment,
         recordPayment, updateSettings, resetToDemo, resetToZero,

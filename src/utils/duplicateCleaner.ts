@@ -27,15 +27,17 @@ export const findDuplicateGroups = (products: Product[]): DuplicateProductGroup[
       barcodeMap.set(cleanCode, existing);
     }
 
-    // 2. Group by 100% exact details: name + category + unit + cost + retail + wholesale
+    // 2. Group by 100% exact details (all specifications identical, ignoring createdAt / addition date):
+    // name + category + unit + cost + retail + wholesale + piecesPerCarton
     const normName = normalizeString(p.name);
     const normCategory = normalizeString(p.category || 'عام');
     const normUnit = normalizeString(p.unit || 'قطعة');
     const cost = Math.round((p.costPrice || 0) * 100);
     const retail = Math.round((p.retailPrice || 0) * 100);
     const wholesale = Math.round((p.wholesalePrice || 0) * 100);
+    const carton = p.piecesPerCarton || 0;
 
-    const exactKey = `${normName}__${normCategory}__${normUnit}__${cost}__${retail}__${wholesale}`;
+    const exactKey = `${normName}__${normCategory}__${normUnit}__${cost}__${retail}__${wholesale}__${carton}`;
     const existingExact = exactMap.get(exactKey) || [];
     existingExact.push(p);
     exactMap.set(exactKey, existingExact);
@@ -44,11 +46,10 @@ export const findDuplicateGroups = (products: Product[]): DuplicateProductGroup[
   const processedProductIds = new Set<string>();
   const duplicateGroups: DuplicateProductGroup[] = [];
 
-  // Helper to pick primary item (oldest or with highest stock)
+  // Helper to pick primary item (prefer item with stock > 0, then earlier addition date createdAt)
   const sortAndSeparate = (items: Product[]) => {
-    // Sort so primary is first: prefer item with stock > 0, then earlier createdAt
     const sorted = [...items].sort((a, b) => {
-      if (b.stock !== a.stock) return b.stock - a.stock;
+      if ((b.stock || 0) !== (a.stock || 0)) return (b.stock || 0) - (a.stock || 0);
       return new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime();
     });
     return {
@@ -58,21 +59,39 @@ export const findDuplicateGroups = (products: Product[]): DuplicateProductGroup[
     };
   };
 
-  // 1. Check Barcode duplicates
+  // 1. Check Barcode duplicates (remains as-is: matches identical barcode/code)
   barcodeMap.forEach((items, code) => {
     if (items.length > 1) {
-      // Check if all items in this barcode group also match exact details
-      const normFirst = normalizeString(items[0].name);
-      const isAlsoExact = items.every((i) => normalizeString(i.name) === normFirst && i.retailPrice === items[0].retailPrice);
-      
+      // Check if all items in this barcode group also match 100% data details (ignoring addition date)
+      const first = items[0];
+      const normFirstName = normalizeString(first.name);
+      const normFirstCategory = normalizeString(first.category || 'عام');
+      const normFirstUnit = normalizeString(first.unit || 'قطعة');
+      const firstCost = Math.round((first.costPrice || 0) * 100);
+      const firstRetail = Math.round((first.retailPrice || 0) * 100);
+      const firstWholesale = Math.round((first.wholesalePrice || 0) * 100);
+      const firstCarton = first.piecesPerCarton || 0;
+
+      const isAlsoExact = items.every((i) => {
+        return (
+          normalizeString(i.name) === normFirstName &&
+          normalizeString(i.category || 'عام') === normFirstCategory &&
+          normalizeString(i.unit || 'قطعة') === normFirstUnit &&
+          Math.round((i.costPrice || 0) * 100) === firstCost &&
+          Math.round((i.retailPrice || 0) * 100) === firstRetail &&
+          Math.round((i.wholesalePrice || 0) * 100) === firstWholesale &&
+          (i.piecesPerCarton || 0) === firstCarton
+        );
+      });
+
       const { primaryItem, duplicateItems, allProducts } = sortAndSeparate(items);
       const matchType = isAlsoExact ? 'both' : 'barcode';
       const matchLabel = isAlsoExact
-        ? `تطابق تام في الباركود (${code}) وتفاصيل المادة بالكامل`
+        ? `تطابق تام في الباركود (${code}) وتشابه 100% في كافة البيانات (ما عدا تاريخ الإضافة)`
         : `تطابق في كود المادة / الباركود (${code})`;
 
       duplicateGroups.push({
-        id: `dup_barcode_${code}_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+        id: `dup_barcode_${code}_${primaryItem.id}`,
         matchType,
         matchLabel,
         matchKey: code,
@@ -86,14 +105,14 @@ export const findDuplicateGroups = (products: Product[]): DuplicateProductGroup[
   });
 
   // 2. Check 100% exact details duplicates (excluding products already grouped by barcode)
-  exactMap.forEach((items, key) => {
+  exactMap.forEach((items) => {
     const unhandledItems = items.filter((p) => !processedProductIds.has(p.id));
     if (unhandledItems.length > 1) {
       const { primaryItem, duplicateItems, allProducts } = sortAndSeparate(unhandledItems);
       duplicateGroups.push({
-        id: `dup_exact_${key}_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+        id: `dup_exact_${primaryItem.id}`,
         matchType: 'exact_details',
-        matchLabel: `تشابه وتطابق 100% في بيانات المادة (${primaryItem.name})، التصنيف، الأسعار والوحدة`,
+        matchLabel: `تشابه وتطابق 100% في بيانات المادة (${primaryItem.name})، التصنيف، الأسعار والوحدة (ما عدا تاريخ الإضافة)`,
         matchKey: primaryItem.name,
         primaryItem,
         duplicateItems,

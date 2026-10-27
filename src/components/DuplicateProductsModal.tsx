@@ -8,14 +8,13 @@ import {
   Barcode, 
   Sparkles, 
   Info, 
-  ShieldCheck, 
   Check, 
   RefreshCw,
-  Box,
-  Copy
+  Copy,
+  ArrowRight
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { DuplicateProductGroup, Product } from '../types';
+import { Product } from '../types';
 import { findDuplicateGroups } from '../utils/duplicateCleaner';
 
 interface DuplicateProductsModalProps {
@@ -23,17 +22,24 @@ interface DuplicateProductsModalProps {
   onClose: () => void;
 }
 
+type ConfirmDialogState = 
+  | { type: 'selected'; count: number }
+  | { type: 'all'; count: number; scopeTitle: string }
+  | { type: 'single'; item: Product; primaryItem: Product }
+  | null;
+
 export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  const { products, deleteProduct, updateProduct, formatMoney } = useApp();
+  const { products, batchDeleteProducts, formatMoney } = useApp();
 
   const [selectedDuplicateIds, setSelectedDuplicateIds] = useState<Set<string>>(new Set());
   const [mergeStockOnClean, setMergeStockOnClean] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
   const [filterType, setFilterType] = useState<'all' | 'barcode' | 'exact'>('all');
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
 
   // Group all duplicates only when modal is open
   const duplicateGroups = useMemo(() => {
@@ -41,21 +47,48 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
     return findDuplicateGroups(products);
   }, [products, isOpen]);
 
-  // Filtered groups
+  // Filtered groups:
+  // - barcode: matches identical barcode (keeps barcode match intact)
+  // - exact: matches 100% data details except addition date (createdAt)
   const filteredGroups = useMemo(() => {
     if (filterType === 'barcode') {
       return duplicateGroups.filter(g => g.matchType === 'barcode' || g.matchType === 'both');
     }
     if (filterType === 'exact') {
-      return duplicateGroups.filter(g => g.matchType === 'exact_details');
+      return duplicateGroups.filter(g => g.matchType === 'exact_details' || g.matchType === 'both');
     }
     return duplicateGroups;
   }, [duplicateGroups, filterType]);
 
-  // Total duplicates that can be cleaned
+  // Counts of duplicate items for filter tabs
+  const barcodeDuplicateItemsCount = useMemo(() => {
+    return duplicateGroups
+      .filter(g => g.matchType === 'barcode' || g.matchType === 'both')
+      .reduce((sum, g) => sum + g.duplicateItems.length, 0);
+  }, [duplicateGroups]);
+
+  const exactDuplicateItemsCount = useMemo(() => {
+    return duplicateGroups
+      .filter(g => g.matchType === 'exact_details' || g.matchType === 'both')
+      .reduce((sum, g) => sum + g.duplicateItems.length, 0);
+  }, [duplicateGroups]);
+
+  // Total duplicates count that can be cleaned across all groups
   const totalDuplicateCount = useMemo(() => {
     return duplicateGroups.reduce((sum, g) => sum + g.duplicateItems.length, 0);
   }, [duplicateGroups]);
+
+  // Duplicate items in the currently active tab
+  const activeTabDuplicateCount = useMemo(() => {
+    return filteredGroups.reduce((sum, g) => sum + g.duplicateItems.length, 0);
+  }, [filteredGroups]);
+
+  // Current tab human-readable title
+  const currentTabTitle = useMemo(() => {
+    if (filterType === 'barcode') return 'قسم تطابق الباركود';
+    if (filterType === 'exact') return 'قسم تشابه 100% بالبيانات';
+    return 'كافة الأقسام';
+  }, [filterType]);
 
   // Toggle single item selection
   const toggleSelect = (id: string) => {
@@ -84,85 +117,109 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
     setSelectedDuplicateIds(new Set());
   };
 
-  // Delete selected duplicates
-  const handleDeleteSelected = async () => {
-    if (selectedDuplicateIds.size === 0) return;
-
-    const count = selectedDuplicateIds.size;
-    if (!window.confirm(`هل أنت متأكد من حذف ${count} مادة مكررة محددة من المخزن؟`)) {
-      return;
-    }
+  // Execute batch deletion atomically with optional stock merge
+  const executeBatchDelete = async (idsToDelete: string[], isAll: boolean, scopeName?: string) => {
+    if (idsToDelete.length === 0) return;
 
     setIsProcessing(true);
     try {
-      // If merging stock is enabled, add duplicate stocks into primary before deleting
+      const stockIncrements: Record<string, number> = {};
+      const idSet = new Set(idsToDelete);
+
       if (mergeStockOnClean) {
         duplicateGroups.forEach(group => {
-          const duplicatesToMerge = group.duplicateItems.filter(d => selectedDuplicateIds.has(d.id));
+          const duplicatesToMerge = group.duplicateItems.filter(d => idSet.has(d.id));
           const totalStockToTransfer = duplicatesToMerge.reduce((acc, curr) => acc + (curr.stock || 0), 0);
           if (totalStockToTransfer > 0) {
-            updateProduct(group.primaryItem.id, {
-              stock: (group.primaryItem.stock || 0) + totalStockToTransfer
-            });
+            stockIncrements[group.primaryItem.id] = (stockIncrements[group.primaryItem.id] || 0) + totalStockToTransfer;
           }
         });
       }
 
-      // Delete the items
-      selectedDuplicateIds.forEach(id => {
-        deleteProduct(id);
-      });
+      const res = await batchDeleteProducts(idsToDelete, stockIncrements);
 
-      setSelectedDuplicateIds(new Set());
-      setActionNotice(`✅ تم بنجاح حذف ${count} مادة مكررة وتحديث بيانات المخزن.`);
-      setTimeout(() => setActionNotice(null), 4000);
+      if (res.success) {
+        setSelectedDuplicateIds(prev => {
+          const next = new Set(prev);
+          idsToDelete.forEach(id => next.delete(id));
+          return next;
+        });
+        setConfirmDialog(null);
+        if (isAll) {
+          setActionNotice(`🎉 تم بنجاح تنظيف وحذف كافة مكررات ${scopeName || 'القسم المحدد'} (${res.deletedCount} مادة مكررة).`);
+        } else {
+          setActionNotice(`✅ تم بنجاح حذف ${res.deletedCount} مادة مكررة محددة وتحديث رصيد المخزن.`);
+        }
+        setTimeout(() => setActionNotice(null), 5000);
+      } else {
+        setActionNotice(`⚠️ تعذر الحذف: ${res.error || 'حدث خطأ غير متوقع'}`);
+      }
     } catch (err: any) {
-      alert('حدث خطأ أثناء حذف المواد المكررة: ' + (err.message || err));
+      setActionNotice(`⚠️ حدث خطأ أثناء الحذف: ${err?.message || err}`);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // Auto Clean ALL duplicates (keep primary, remove duplicates)
-  const handleAutoCleanAll = async () => {
-    if (totalDuplicateCount === 0) return;
-
-    const confirmMsg = 
-      `هل أنت متأكد من حذف كافة النسخ المكررة (${totalDuplicateCount} مادة مكررة) بضغطة واحدة؟\n\n` +
-      `✓ سيتم الاحتفاظ بالمادة الأساسية الأولى لكل صنف.\n` +
-      (mergeStockOnClean ? `✓ سيتم دمج وجمع رصيد المخزن في المادة الأصلية حتى لا تفقد أي بضاعة.` : '');
-
-    if (!window.confirm(confirmMsg)) {
-      return;
-    }
-
+  // Execute single item delete
+  const executeSingleDelete = async (dup: Product, primaryItem: Product) => {
     setIsProcessing(true);
     try {
-      let deletedTotal = 0;
+      const stockIncrements: Record<string, number> = {};
+      if (mergeStockOnClean && (dup.stock || 0) > 0) {
+        stockIncrements[primaryItem.id] = dup.stock;
+      }
 
-      duplicateGroups.forEach(group => {
-        if (mergeStockOnClean) {
-          const totalStockToTransfer = group.duplicateItems.reduce((acc, curr) => acc + (curr.stock || 0), 0);
-          if (totalStockToTransfer > 0) {
-            updateProduct(group.primaryItem.id, {
-              stock: (group.primaryItem.stock || 0) + totalStockToTransfer
-            });
-          }
-        }
+      const res = await batchDeleteProducts([dup.id], stockIncrements);
 
-        group.duplicateItems.forEach(dup => {
-          deleteProduct(dup.id);
-          deletedTotal++;
+      if (res.success) {
+        setSelectedDuplicateIds(prev => {
+          const next = new Set(prev);
+          next.delete(dup.id);
+          return next;
         });
-      });
-
-      setSelectedDuplicateIds(new Set());
-      setActionNotice(`🎉 تم بنجاح تنظيف وحذف ${deletedTotal} مادة مكررة، وأصبح المخزن نقياً بنسبة 100%!`);
-      setTimeout(() => setActionNotice(null), 5000);
+        setConfirmDialog(null);
+        setActionNotice(`✅ تم حذف النسخة المكررة (${dup.name}) بنجاح`);
+        setTimeout(() => setActionNotice(null), 3500);
+      } else {
+        setActionNotice(`⚠️ تعذر الحذف: ${res.error || 'حدث خطأ'}`);
+      }
     } catch (err: any) {
-      alert('حدث خطأ أثناء تنظيف المواد المكررة: ' + (err.message || err));
+      setActionNotice(`⚠️ حدث خطأ: ${err?.message || err}`);
     } finally {
       setIsProcessing(false);
+    }
+  };
+
+  // Triggers for buttons to open in-app confirmation
+  const handleOpenDeleteSelectedConfirm = () => {
+    if (selectedDuplicateIds.size === 0) return;
+    setConfirmDialog({ type: 'selected', count: selectedDuplicateIds.size });
+  };
+
+  const handleOpenAutoCleanAllConfirm = () => {
+    if (activeTabDuplicateCount === 0) return;
+    setConfirmDialog({ 
+      type: 'all', 
+      count: activeTabDuplicateCount,
+      scopeTitle: currentTabTitle
+    });
+  };
+
+  const handleConfirmAction = () => {
+    if (!confirmDialog) return;
+
+    if (confirmDialog.type === 'selected') {
+      executeBatchDelete(Array.from(selectedDuplicateIds), false);
+    } else if (confirmDialog.type === 'all') {
+      // Strictly collect duplicate IDs from filteredGroups (the currently active tab!)
+      const targetIds: string[] = [];
+      filteredGroups.forEach(g => {
+        g.duplicateItems.forEach(d => targetIds.push(d.id));
+      });
+      executeBatchDelete(targetIds, true, confirmDialog.scopeTitle);
+    } else if (confirmDialog.type === 'single') {
+      executeSingleDelete(confirmDialog.item, confirmDialog.primaryItem);
     }
   };
 
@@ -182,18 +239,18 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
               <h3 className="text-base sm:text-lg font-black text-slate-900 flex items-center gap-2">
                 <span>أداة كشف وإلغاء المواد المكررة</span>
                 {totalDuplicateCount > 0 ? (
-                  <span className="text-xs bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full border border-amber-200">
+                  <span className="text-xs bg-amber-100 text-amber-800 font-bold px-2.5 py-0.5 rounded-full border border-amber-200">
                     {totalDuplicateCount} مادة مكررة
                   </span>
                 ) : (
-                  <span className="text-xs bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
-                    <Check className="w-3 h-3" />
+                  <span className="text-xs bg-emerald-100 text-emerald-800 font-bold px-2.5 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
+                    <Check className="w-3.5 h-3.5" />
                     المخزن نظيف وخالٍ من التكرار
                   </span>
                 )}
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                فحص المواد المتطابقة في الباركود أو المتطابقة بنسبة 100% في بياناتها مع إمكانية مراجعتها وحذفها.
+                فحص المواد المتطابقة في الباركود أو المتطابقة بنسبة 100% في بياناتها (ما عدا تاريخ الإضافة) مع إمكانية مراجعتها وتنظيفها.
               </p>
             </div>
           </div>
@@ -209,9 +266,58 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
 
         {/* Action Notice */}
         {actionNotice && (
-          <div className="p-3 bg-emerald-50 border-b border-emerald-200 text-xs font-bold text-emerald-900 flex items-center gap-2">
+          <div className="p-3 bg-emerald-50 border-b border-emerald-200 text-xs font-bold text-emerald-900 flex items-center gap-2 animate-fadeIn">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>{actionNotice}</span>
+          </div>
+        )}
+
+        {/* In-App Confirmation Prompt (Prevents browser popup block in iframe) */}
+        {confirmDialog && (
+          <div className="p-4 bg-rose-50 border-b border-rose-200 text-rose-950 animate-fadeIn">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <h4 className="text-sm font-black">
+                  {confirmDialog.type === 'all'
+                    ? `تأكيد تنظيف وحذف مكررات ${confirmDialog.scopeTitle} (${confirmDialog.count} مادة مكررة)`
+                    : confirmDialog.type === 'selected'
+                    ? `تأكيد حذف المواد المحددة (${confirmDialog.count} مادة)`
+                    : `تأكيد حذف النسخة المكررة (${confirmDialog.item.name})`}
+                </h4>
+                <p className="text-xs text-rose-800 mt-1 leading-relaxed">
+                  {confirmDialog.type === 'all'
+                    ? `سيتم تنظيف وحذف المواد المكررة التابعة لـ (${confirmDialog.scopeTitle}) فقط والاحتفاظ بالمادة الأساسية لكل صنف دون المساس بباقي الأقسام.`
+                    : 'سيتم حذف المواد المختارة نهائياً من قاعدة بيانات المخزن.'}
+                  {mergeStockOnClean && (
+                    <span className="block mt-1 font-bold text-emerald-800">
+                      ✓ سيتم دمج وجمع رصيد المواد المحذوفة تلقائياً في المادة الأصلية لحماية بضاعتك من أي نقص.
+                    </span>
+                  )}
+                </p>
+                <div className="flex items-center gap-2 mt-3">
+                  <button
+                    type="button"
+                    disabled={isProcessing}
+                    onClick={handleConfirmAction}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-black rounded-xl shadow-xs transition cursor-pointer flex items-center gap-1.5 active:scale-98"
+                  >
+                    {isProcessing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                    <span>نعم، تأكيد الحذف الآن</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isProcessing}
+                    onClick={() => setConfirmDialog(null)}
+                    className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 text-xs font-bold rounded-xl border border-slate-300 transition cursor-pointer"
+                  >
+                    إلغاء وتراجع
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -222,42 +328,42 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
             <button
               type="button"
               onClick={() => setFilterType('all')}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
                 filterType === 'all'
                   ? 'bg-slate-900 text-white'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              الكل ({duplicateGroups.length} صنف مكرر)
+              الكل ({totalDuplicateCount} مكرر)
             </button>
             <button
               type="button"
               onClick={() => setFilterType('barcode')}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 filterType === 'barcode'
                   ? 'bg-amber-600 text-white'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <Barcode className="w-3.5 h-3.5" />
-              <span>تطابق الباركود</span>
+              <span>تطابق الباركود ({barcodeDuplicateItemsCount} مكرر)</span>
             </button>
             <button
               type="button"
               onClick={() => setFilterType('exact')}
-              className={`px-3 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
                 filterType === 'exact'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
               <Copy className="w-3.5 h-3.5" />
-              <span>تشابه 100% بالبيانات</span>
+              <span>تشابه 100% بالبيانات ما عدا تاريخ الإضافة ({exactDuplicateItemsCount} مكرر)</span>
             </button>
           </div>
 
           {/* Merge Stock Toggle */}
-          <label className="flex items-center gap-2 cursor-pointer bg-white px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-800">
+          <label className="flex items-center gap-2 cursor-pointer bg-white px-3 py-1.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-800 hover:border-slate-300 transition">
             <input
               type="checkbox"
               checked={mergeStockOnClean}
@@ -277,7 +383,17 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
               </div>
               <h4 className="text-base font-extrabold text-slate-800">المخزن منظم وخالٍ تماماً من أي مواد مكررة</h4>
               <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-                كافة المواد ({products.length} مادة) تمتلك رموز باركود فريدة وبيانات متميزة. لا توجد أي نسخ مكررة مطابقة في النظام.
+                كافة المواد ({products.length} مادة) متميزة وفريدة في الباركود والتفاصيل. لا توجد نسخ مكررة مطابقة في النظام.
+              </p>
+            </div>
+          ) : filteredGroups.length === 0 ? (
+            <div className="py-14 text-center text-slate-400">
+              <div className="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
+                <Info className="w-6 h-6" />
+              </div>
+              <h4 className="text-sm font-bold text-slate-700">لا توجد مواد مكررة في هذا التصنيف المحدد</h4>
+              <p className="text-xs text-slate-500 mt-1">
+                يمكنك التبديل إلى قسم "الكل" لعرض كافة المواد المكررة الأخرى.
               </p>
             </div>
           ) : (
@@ -286,7 +402,7 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
               <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl flex items-start gap-2.5 text-xs text-amber-900">
                 <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                 <div className="leading-relaxed">
-                  <strong>طريقة المراجعة:</strong> يتم تمييز المادة الأصلية باللون الأخضر (التي ستبقى في المخزن)، بينما تظهر النسخ المكررة الإضافية باللون البرتقالي ويمكنك حذفها فرادى أو تحديدها وحذفها معاً.
+                  <strong>طريقة المراجعة:</strong> يتم تمييز المادة الأصلية باللون الأخضر (التي ستبقى في المخزن)، بينما تظهر النسخ المكررة الإضافية باللون البرتقالي/الأبيض ويمكنك حذفها فرادى أو تحديدها وحذفها معاً.
                 </div>
               </div>
 
@@ -317,7 +433,7 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           {isBarcodeMatch && (
                             <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold border border-amber-200 font-mono">
                               كود: {group.primaryItem.code || group.matchKey}
@@ -325,7 +441,7 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
                           )}
                           {isExactMatch && (
                             <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 text-[10px] font-bold border border-indigo-200">
-                              تطابق 100% بالبيانات
+                              تطابق 100% بالبيانات (ما عدا تاريخ الإضافة)
                             </span>
                           )}
                         </div>
@@ -412,17 +528,8 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
                                 </div>
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    if (window.confirm(`هل تريد بالتأكيد حذف هذه النسخة المكررة (${dup.name})؟`)) {
-                                      if (mergeStockOnClean && dup.stock > 0) {
-                                        updateProduct(group.primaryItem.id, {
-                                          stock: (group.primaryItem.stock || 0) + dup.stock
-                                        });
-                                      }
-                                      deleteProduct(dup.id);
-                                    }
-                                  }}
-                                  className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-100 border border-rose-200 text-xs font-bold transition cursor-pointer flex items-center gap-1"
+                                  onClick={() => setConfirmDialog({ type: 'single', item: dup, primaryItem: group.primaryItem })}
+                                  className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-100 border border-rose-200 text-xs font-bold transition cursor-pointer flex items-center gap-1 active:scale-95"
                                   title="حذف هذه النسخة المكررة فقط"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
@@ -457,13 +564,13 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
                   إلغاء التحديد
                 </button>
               </div>
-            ) : totalDuplicateCount > 0 ? (
+            ) : activeTabDuplicateCount > 0 ? (
               <button
                 type="button"
                 onClick={selectAllVisibleDuplicates}
                 className="text-indigo-700 hover:text-indigo-900 font-bold underline cursor-pointer"
               >
-                تحديد كافة المواد المكررة الظاهرة ({filteredGroups.reduce((a, c) => a + c.duplicateItems.length, 0)})
+                تحديد كافة المواد المكررة في هذا القسم ({activeTabDuplicateCount})
               </button>
             ) : null}
           </div>
@@ -481,27 +588,34 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
               <button
                 type="button"
                 disabled={isProcessing}
-                onClick={handleDeleteSelected}
-                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5 shadow-xs flex-1 sm:flex-initial"
+                onClick={handleOpenDeleteSelectedConfirm}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl transition cursor-pointer flex items-center justify-center gap-1.5 shadow-xs flex-1 sm:flex-initial active:scale-98"
               >
                 <Trash2 className="w-4 h-4" />
                 <span>حذف المحدد ({selectedDuplicateIds.size})</span>
               </button>
             )}
 
-            {totalDuplicateCount > 0 && (
+            {activeTabDuplicateCount > 0 && (
               <button
                 type="button"
                 disabled={isProcessing}
-                onClick={handleAutoCleanAll}
+                onClick={handleOpenAutoCleanAllConfirm}
                 className="px-5 py-2 bg-amber-600 hover:bg-amber-700 text-white text-xs font-black rounded-xl transition cursor-pointer flex items-center justify-center gap-2 shadow-md shadow-amber-600/20 flex-1 sm:flex-initial active:scale-98"
+                title={`حذف كافة المواد المكررة في ${currentTabTitle} فقط`}
               >
                 {isProcessing ? (
                   <RefreshCw className="w-4 h-4 animate-spin" />
                 ) : (
                   <Sparkles className="w-4 h-4" />
                 )}
-                <span>تنظيف وحذف كافة المكررات بضغطة واحدة ({totalDuplicateCount})</span>
+                <span>
+                  {filterType === 'barcode'
+                    ? `تنظيف وحذف كافة مكررات الباركود (${activeTabDuplicateCount})`
+                    : filterType === 'exact'
+                    ? `تنظيف وحذف كافة مكررات تشابه 100% (${activeTabDuplicateCount})`
+                    : `تنظيف وحذف كافة المكررات (${activeTabDuplicateCount})`}
+                </span>
               </button>
             )}
           </div>
