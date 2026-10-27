@@ -7,35 +7,46 @@ export const supabaseAnonKey = 'sb_publishable_0aNPlD59KqYsmVr8r_tMEw_wpgmlj2o';
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// دالة لجلب وثيقة
+// دالة لجلب وثيقة محددة من السحابة
 export async function getDocument(collectionName: string, docId: string) {
-  const { data, error } = await supabase
-    .from('documents')
-    .select('data')
-    .eq('collection', collectionName)
-    .eq('id', docId)
-    .maybeSingle();
+  try {
+    const { data, error } = await supabase
+      .from('documents')
+      .select('data')
+      .eq('collection', collectionName)
+      .eq('id', docId)
+      .maybeSingle();
 
-  if (error) {
-    console.error(`Error fetching ${collectionName}/${docId}:`, error);
+    if (error) {
+      console.error(`Error fetching ${collectionName}/${docId}:`, error);
+      return null;
+    }
+    return data ? data.data : null;
+  } catch (err) {
+    console.error('Network error fetching document:', err);
     return null;
   }
-  return data ? data.data : null;
 }
 
-// دالة لحفظ أو تحديث وثيقة
+// دالة لحفظ أو تحديث وثيقة في السحابة
 export async function setDocument(collectionName: string, docId: string, docData: any) {
-  const { error } = await supabase
-    .from('documents')
-    .upsert({
-      collection: collectionName,
-      id: docId,
-      data: docData,
-      updated_at: new Date().toISOString()
-    });
+  try {
+    const { error } = await supabase
+      .from('documents')
+      .upsert({
+        collection: collectionName,
+        id: docId,
+        data: docData,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'collection,id' });
 
-  if (error) {
-    console.error(`Error saving ${collectionName}/${docId}:`, error);
+    if (error) {
+      console.error(`Error saving ${collectionName}/${docId}:`, error);
+      throw error;
+    }
+  } catch (err) {
+    console.error('Network error saving document:', err);
+    throw err;
   }
 }
 
@@ -64,7 +75,7 @@ export function subscribeToDocument(collectionName: string, docId: string, callb
   };
 }
 
-// دالة تسجيل الخروج البديلة لـ Firebase
+// دالة تسجيل الخروج
 export async function logoutAccount() {
   try {
     localStorage.removeItem('active_client_session');
@@ -83,7 +94,7 @@ export function getActiveLocalSession() {
   }
 }
 
-// واجهات ودوال إدارة الحسابات للوحة الأدمن
+// واجهات ودوال إدارة الحسابات
 export interface CreateClientInput {
   username: string;
   password: string;
@@ -159,6 +170,13 @@ export async function updateClientAccount(updates: UpdateClientInput) {
   };
 
   await setDocument('users', updates.uid, updatedData);
+
+  // تحديث الجلسة المحلية إذا كان المستخدم الحالي هو من قام بتغيير بياناته
+  const currentSession = getActiveLocalSession();
+  if (currentSession && currentSession.uid === updates.uid) {
+    localStorage.setItem('active_client_session', JSON.stringify(updatedData));
+  }
+
   return updatedData;
 }
 
@@ -208,41 +226,39 @@ export async function deleteClientAccount(uid: string) {
   await supabase.from('documents').delete().eq('collection', 'stores').eq('id', `store_${uid}`);
 }
 
-// دالة تسجيل الدخول عبر Supabase مع التحقق الشامل لحساب الأدمن المالك
+// دالة تسجيل الدخول عبر Supabase الموحدة سحابياً
 export async function loginWithEmailOrUsername(identifier: string, password: string) {
   const cleanId = identifier.trim().toLowerCase();
   const cleanPass = password.trim();
 
-  // فحص حساب الأدمن والمالك الرسمي للنظام
+  // فحص حساب الأدمن
   const isOwnerAdmin =
     cleanId === 'tlfghlbtghlby@gmail.com' ||
     cleanId === 'tlfghlbtghlby' ||
-    cleanId === 'admin' ||
-    cleanId === 'admin_master_001' ||
-    cleanId === 'admin_root';
+    cleanId === 'admin';
 
   if (isOwnerAdmin) {
-    // التحقق من كلمة المرور لحساب الأدمن
-    const validAdminPass =
-      cleanPass === '123456' ||
-      cleanPass === 'admin123' ||
-      cleanPass === 'admin' ||
-      cleanPass.length >= 6;
+    // جلب بيانات الأدمن المحدثة سحابياً من جدول documents
+    let adminData = await getDocument('users', 'user_tlfghlbtghlby@gmail.com');
 
-    if (!validAdminPass) {
-      throw new Error('كلمة المرور غير صحيحة لحساب المدير.');
+    // إذا لم يجدها يبحث بالمعرف القديم البديل
+    if (!adminData) {
+      adminData = await getDocument('users', 'admin_master_001');
     }
 
-    // جلب أي بيانات مخزنة للمتجر إذا وجدت
-    const ownerUid = 'admin_master_001';
-    let savedOwnerData = await getDocument('users', ownerUid);
+    // كلمة المرور الفعلية (من السحابة أو الافتراضية 123456)
+    const expectedPassword = String(adminData?.password || '123456').trim();
+
+    if (cleanPass !== expectedPassword) {
+      throw new Error('كلمة المرور غير صحيحة لحساب المدير العام.');
+    }
 
     const adminUser = {
-      uid: ownerUid,
-      username: 'admin',
+      uid: adminData?.uid || 'user_tlfghlbtghlby@gmail.com',
+      username: adminData?.username || 'tlfghlbtghlby',
       email: 'tlfghlbtghlby@gmail.com',
-      displayName: savedOwnerData?.displayName || 'المدير العام (أدمن)',
-      storeName: savedOwnerData?.storeName || 'المفكر المحاسبي',
+      displayName: adminData?.displayName || 'المدير العام (أدمن)',
+      storeName: adminData?.storeName || 'المفكر المحاسبي',
       role: 'admin',
       isAdmin: true,
       isActive: true,
@@ -256,13 +272,12 @@ export async function loginWithEmailOrUsername(identifier: string, password: str
     return adminUser;
   }
 
-  // البحث في Supabase لحسابات المشتركين العاديين بالمعرف المباشر
+  // حسابات المشتركين والكاشيرات العاديين
   let userData = await getDocument('users', 'user_' + cleanId);
   if (!userData) {
     userData = await getDocument('users', cleanId);
   }
 
-  // البحث المطابق باسم المستخدم أو الهاتف أو البريد الإلكتروني
   if (!userData) {
     const allUsers = await loadAllClientAccounts();
     const matched = allUsers.find((u: any) => 
@@ -280,7 +295,7 @@ export async function loginWithEmailOrUsername(identifier: string, password: str
   }
 
   if (userData.isActive === false) {
-    throw new Error('⚠️ هذا الحساب معطل وموقوف من قبل الإدارة. يرجى مراجعة المدير العام.');
+    throw new Error('⚠️ هذا الحساب معطل وموقوف من قبل الإدارة.');
   }
 
   if (!userData.isPermanent && userData.trialExpiresAt) {
@@ -300,7 +315,7 @@ export async function loginWithEmailOrUsername(identifier: string, password: str
   return userData;
 }
 
-// دالة سحب وترحيل كافة حسابات المستخدمين من Firebase دفعة واحدة
+// دالة ترحيل المستخدمين من Firebase
 export async function migrateAllUsersFromFirebase(): Promise<{ success: boolean; count: number; error?: string }> {
   try {
     const usersSnap = await getDocs(collection(db, 'users'));
