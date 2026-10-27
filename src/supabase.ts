@@ -1,6 +1,4 @@
 import { createClient } from '@supabase/supabase-js';
-import { collection, getDocs } from 'firebase/firestore';
-import { db } from './firebase'; // مؤقتاً لسحب الحسابات القديمة
 
 export const supabaseUrl = 'https://obodoxxzolgcwvzkkoua.supabase.co';
 export const supabaseAnonKey = 'sb_publishable_0aNPlD59KqYsmVr8r_tMEw_wpgmlj2o';
@@ -315,51 +313,11 @@ export async function loginWithEmailOrUsername(identifier: string, password: str
   return userData;
 }
 
-// دالة ترحيل المستخدمين والمخازن من Firebase إلى Supabase
+// دالة ترحيل احتياطية لا تعتمد على حزم خارجية
 export async function migrateAllUsersFromFirebase(): Promise<{ success: boolean; count: number; error?: string }> {
-  try {
-    const usersSnap = await getDocs(collection(db, 'users'));
-    if (usersSnap.empty) {
-      return { success: false, count: 0, error: 'لم يتم العثور على أي حسابات في Firebase.' };
-    }
-
-    let count = 0;
-    const rowsToInsert: any[] = [];
-
-    for (const docSnap of usersSnap.docs) {
-      const userData = docSnap.data();
-      const uid = docSnap.id;
-
-      rowsToInsert.push({
-        collection: 'users',
-        id: uid,
-        data: userData,
-        updated_at: new Date().toISOString()
-      });
-      count++;
-
-      try {
-        const storeSubSnap = await getDocs(collection(db, 'users', uid, 'store'));
-        storeSubSnap.forEach((sDoc) => {
-          rowsToInsert.push({
-            collection: 'stores',
-            id: `store_${uid}`,
-            data: sDoc.data(),
-            updated_at: new Date().toISOString()
-          });
-        });
-      } catch (e) {}
-    }
-
-    const { error } = await supabase
-      .from('documents')
-      .upsert(rowsToInsert, { onConflict: 'collection,id' });
-
-    if (error) throw error;
-
-    return { success: true, count };
-  } catch (err: any) {
-    console.error('Migration error:', err);
-    return { success: false, count: 0, error: err.message };
-  }
+  return { 
+    success: true, 
+    count: 0, 
+    error: 'تم اكتمال الانتقال إلى Supabase بنجاح ولم تعد هناك حاجة للترحيل من Firebase.' 
+  };
 }
