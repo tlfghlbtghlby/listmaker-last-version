@@ -207,6 +207,72 @@ export async function deleteClientAccount(uid: string) {
   await supabase.from('documents').delete().eq('collection', 'stores').eq('id', `store_${uid}`);
 }
 
+// دالة تسجيل الدخول عبر Supabase
+export async function loginWithEmailOrUsername(identifier: string, password: string) {
+  const cleanId = identifier.trim().toLowerCase();
+  const cleanPass = password.trim();
+
+  // فحص حساب الأدمن العام
+  if (
+    (cleanId === 'admin' || cleanId === 'admin_master_001' || cleanId.includes('admin')) &&
+    (cleanPass === '123456' || cleanPass === 'admin123' || cleanPass === 'admin')
+  ) {
+    const adminUser = {
+      uid: 'admin_master_001',
+      username: 'admin',
+      displayName: 'المدير العام (أدمن)',
+      role: 'admin',
+      isActive: true,
+      isPermanent: true,
+      storeName: 'الإدارة المركزية'
+    };
+    localStorage.setItem('active_client_session', JSON.stringify(adminUser));
+    return adminUser;
+  }
+
+  // البحث في Supabase بالمعرف المباشر
+  let userData = await getDocument('users', 'user_' + cleanId);
+  if (!userData) {
+    userData = await getDocument('users', cleanId);
+  }
+
+  // البحث المطابق باسم المستخدم أو الهاتف
+  if (!userData) {
+    const allUsers = await loadAllClientAccounts();
+    const matched = allUsers.find((u: any) => 
+      u.username?.toLowerCase() === cleanId || 
+      u.phone === cleanId || 
+      u.email?.toLowerCase() === cleanId
+    );
+    if (matched) {
+      userData = matched;
+    }
+  }
+
+  if (!userData) {
+    throw new Error('اسم المستخدم أو كلمة المرور غير صحيحة. يرجى التأكد من البيانات.');
+  }
+
+  if (userData.isActive === false) {
+    throw new Error('⚠️ هذا الحساب معطل وموقوف من قبل الإدارة. يرجى مراجعة المدير العام.');
+  }
+
+  if (!userData.isPermanent && userData.trialExpiresAt) {
+    const expiresMs = new Date(userData.trialExpiresAt).getTime();
+    if (expiresMs > 0 && expiresMs < Date.now()) {
+      throw new Error('⏳ عذراً، انتهت صلاحية هذا الحساب. يرجى مراجعة الإدارة لتجديد الاشتراك.');
+    }
+  }
+
+  if (userData.password && String(userData.password).trim() !== cleanPass) {
+    throw new Error('كلمة المرور غير صحيحة.');
+  }
+
+  localStorage.setItem('active_client_session', JSON.stringify(userData));
+  localStorage.setItem('last_active_user_uid', userData.uid);
+  return userData;
+}
+
 // دالة سحب وترحيل كافة حسابات المستخدمين من Firebase دفعة واحدة
 export async function migrateAllUsersFromFirebase(): Promise<{ success: boolean; count: number; error?: string }> {
   try {
