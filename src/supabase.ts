@@ -61,3 +61,21 @@ export function subscribeToDocument(collectionName: string, docId: string, callb
     unsubscribe: () => supabase.removeChannel(channel)
   };
 }
+
+// دالة تسجيل الخروج البديلة لـ Firebase
+export async function logoutAccount() {
+  try {
+    localStorage.removeItem('active_client_session');
+    localStorage.removeItem('last_active_user_uid');
+  } catch (e) {}
+}
+
+// دالة جلب الجلسة النشطة محلياً
+export function getActiveLocalSession() {
+  try {
+    const raw = localStorage.getItem('active_client_session');
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
