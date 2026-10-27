@@ -20,7 +20,8 @@
       "output": "dist-electron"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "public/icon.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -29,13 +30,15 @@
     }
   },
   "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/cli": "^7.0.0",
+    "@capacitor/core": "^7.0.0",
     "@google/genai": "^2.4.0",
     "@supabase/supabase-js": "^2.118.0",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
-    "firebase": "^12.19.0",
     "html-to-image": "^1.11.13",
     "html2canvas": "^1.4.1",
     "html2canvas-pro": "^2.5.1",
