@@ -243,6 +243,9 @@ export const sanitizePayload = <T = any>(obj: T): T => {
   return obj;
 };
 
+// توافقية عكسية مع المكونات الأخرى
+export const sanitizeForFirestore = sanitizePayload;
+
 export const createDefaultDraftOrder = (orderNumber: number = 1): POSDraftOrder => {
   const d = new Date();
   d.setDate(d.getDate() + 15);
@@ -855,11 +858,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const syncNow = async () => {
     if (!currentUser) return;
     setIsSyncing(true);
-    setSyncNotice('جاري المزامنة مع سحابة Supabase...');
+    setSyncNotice('جاري المزامنة...');
     try {
       await saveStoreToCloud();
       setIsCloudConnected(true);
-      setSyncNotice('✅ اكتملت المزامنة بنجاح وبدون أي قيود عمليات.');
+      setSyncNotice('✅ اكتملت المزامنة بنجاح.');
       setTimeout(() => setSyncNotice(null), 3500);
     } catch {
       setIsCloudConnected(false);
@@ -1442,7 +1445,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try { localStorage.setItem('cached_pos_products', JSON.stringify(updatedList)); } catch {}
       await saveStoreToCloud({ products: updatedList });
 
-      setSyncNotice(`✅ تمت استعادة وتحديث ${cleanList.length} مادة بنجاح في Supabase.`);
+      setSyncNotice(`✅ تمت استعادة وتحديث ${cleanList.length} مادة بنجاح.`);
       setTimeout(() => setSyncNotice(null), 4500);
 
       return { success: true, count: cleanList.length };

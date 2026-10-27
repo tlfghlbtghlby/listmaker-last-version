@@ -101,7 +101,7 @@ export const AdminPanel: React.FC = () => {
       if (res.success) {
         setFeedback({
           type: 'success',
-          message: `✅ تم ترحيل وتأمين ${res.count} حساب بنجاح إلى قاعدة بيانات Supabase!`
+          message: `✅ تم ترحيل وتأمين ${res.count} حساب بنجاح!`
         });
         await fetchClients();
       } else {
@@ -175,7 +175,7 @@ export const AdminPanel: React.FC = () => {
 
       setFeedback({
         type: 'success',
-        message: `تم إنشاء وتفعيل حساب الزبون (${newClient.displayName}) بنجاح عبر Supabase! الصلاحية: ${
+        message: `تم إنشاء وتفعيل حساب الزبون (${newClient.displayName}) بنجاح! الصلاحية: ${
           isPerm ? '⭐ حساب دائمي مدى الحياة' : initialPlan === 'yearly' ? 'باقة سنوية (365 يوم)' : initialPlan === 'monthly' ? 'باقة شهرية (30 يوم)' : 'فترة تجريبية 3 أيام'
         } · اسم الدخول: ${cleanUsername} · الرمز: ${password}`
       });
@@ -261,7 +261,7 @@ export const AdminPanel: React.FC = () => {
 
       setFeedback({
         type: 'success',
-        message: `تم تحديث بيانات حساب الزبون (${updates.displayName}) وصلاحية الاشتراك بنجاح في Supabase.`
+        message: `تم تحديث بيانات حساب الزبون (${updates.displayName}) وصلاحية الاشتراك بنجاح.`
       });
 
       setEditingClient(null);
@@ -332,7 +332,7 @@ export const AdminPanel: React.FC = () => {
       await deleteClientAccount(clientToDelete.uid);
       setFeedback({
         type: 'success',
-        message: `تم حذف حساب الزبون (${clientToDelete.displayName || clientToDelete.username}) ومستنداته من Supabase نهائياً.`
+        message: `تم حذف حساب الزبون (${clientToDelete.displayName || clientToDelete.username}) نهائياً.`
       });
       setClients(prev => prev.filter(c => c.uid !== clientToDelete.uid));
       setClientToDelete(null);
@@ -419,10 +419,10 @@ export const AdminPanel: React.FC = () => {
             onClick={handleMigrateFromFirebase}
             disabled={isMigrating || isLoading}
             className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-md"
-            title="سحب كافة الحسابات والمشتركين من Firebase وحفظها في Supabase"
+            title="سحب وتأمين كافة الحسابات والمشتركين"
           >
             <Zap className={`w-3.5 h-3.5 ${isMigrating ? 'animate-pulse text-amber-300' : ''}`} />
-            <span>{isMigrating ? 'جاري الترحيل...' : 'ترحيل الحسابات من Firebase الآن'}</span>
+            <span>{isMigrating ? 'جاري الترحيل...' : 'ترحيل الحسابات وتأمينها'}</span>
           </button>
 
           {/* زر التحديث */}
@@ -463,9 +463,6 @@ export const AdminPanel: React.FC = () => {
           <UserPlus className="w-4 h-4" />
           <span>إنشاء حساب زبون جديد (إصدار ترخيص مستخدم)</span>
         </div>
-        <p className="text-xs text-slate-400">
-          يتم حفظ الحساب وتفعيله فورياً عبر قاعدة بيانات Supabase دون قيود وبشكل مباشر.
-        </p>
 
         <form onSubmit={handleCreateClient} className="space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
