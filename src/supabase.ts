@@ -1,4 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
+import { collection, getDocs } from 'firebase/firestore';
+import { db } from './firebase'; // مؤقتاً لسحب الحسابات القديمة
 
 export const supabaseUrl = 'https://obodoxxzolgcwvzkkoua.supabase.co';
 export const supabaseAnonKey = 'sb_publishable_0aNPlD59KqYsmVr8r_tMEw_wpgmlj2o';
@@ -77,5 +79,167 @@ export function getActiveLocalSession() {
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
+  }
+}
+
+// واجهات ودوال إدارة الحسابات للوحة الأدمن
+export interface CreateClientInput {
+  username: string;
+  password: string;
+  displayName: string;
+  storeName: string;
+  phone: string;
+}
+
+export interface UpdateClientInput {
+  uid: string;
+  displayName?: string;
+  storeName?: string;
+  phone?: string;
+  password?: string;
+  isActive?: boolean;
+}
+
+export async function loadAllClientAccounts() {
+  const { data, error } = await supabase
+    .from('documents')
+    .select('id, data')
+    .eq('collection', 'users');
+
+  if (error) {
+    console.error('Error fetching clients:', error);
+    return [];
+  }
+
+  return (data || []).map((row: any) => ({
+    uid: row.id,
+    ...row.data
+  }));
+}
+
+export async function createClientAccount(input: CreateClientInput) {
+  const cleanUsername = input.username.trim().toLowerCase();
+  const uid = 'user_' + cleanUsername;
+
+  const existing = await getDocument('users', uid);
+  if (existing) {
+    const err: any = new Error('اسم المستخدم مستخدم مسبقاً، يرجى اختيار اسم آخر.');
+    err.code = 'auth/email-already-in-use';
+    throw err;
+  }
+
+  const now = new Date();
+  const newClientData = {
+    uid,
+    username: cleanUsername,
+    displayName: input.displayName,
+    storeName: input.storeName,
+    phone: input.phone,
+    password: input.password,
+    role: 'client',
+    isActive: true,
+    isPermanent: false,
+    trialExpiresAt: new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+    createdAt: now.toISOString(),
+  };
+
+  await setDocument('users', uid, newClientData);
+  return newClientData;
+}
+
+export async function updateClientAccount(updates: UpdateClientInput) {
+  const existing = await getDocument('users', updates.uid);
+  if (!existing) throw new Error('الحساب غير موجود');
+
+  const updatedData = {
+    ...existing,
+    ...updates,
+    updatedAt: new Date().toISOString()
+  };
+
+  await setDocument('users', updates.uid, updatedData);
+  return updatedData;
+}
+
+export async function toggleClientAccountStatus(uid: string, nextStatus: boolean) {
+  const existing = await getDocument('users', uid);
+  if (!existing) throw new Error('الحساب غير موجود');
+
+  existing.isActive = nextStatus;
+  await setDocument('users', uid, existing);
+}
+
+export async function updateClientSubscription(
+  uid: string,
+  options: {
+    action: 'set_permanent' | 'set_custom_date' | 'extend_days';
+    isPermanent?: boolean;
+    customDate?: string;
+    days?: number;
+  }
+) {
+  try {
+    const existing = await getDocument('users', uid);
+    if (!existing) return { success: false, error: 'الحساب غير موجود' };
+
+    if (options.action === 'set_permanent') {
+      existing.isPermanent = true;
+      existing.trialExpiresAt = null;
+    } else if (options.action === 'set_custom_date') {
+      existing.isPermanent = false;
+      existing.trialExpiresAt = options.customDate;
+    } else if (options.action === 'extend_days' && options.days) {
+      existing.isPermanent = false;
+      const baseMs = existing.trialExpiresAt ? new Date(existing.trialExpiresAt).getTime() : Date.now();
+      const currentStart = Math.max(baseMs, Date.now());
+      existing.trialExpiresAt = new Date(currentStart + options.days * 24 * 60 * 60 * 1000).toISOString();
+    }
+
+    await setDocument('users', uid, existing);
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function deleteClientAccount(uid: string) {
+  await supabase.from('documents').delete().eq('collection', 'users').eq('id', uid);
+  await supabase.from('documents').delete().eq('collection', 'stores').eq('id', `store_${uid}`);
+}
+
+// دالة سحب وترحيل كافة حسابات المستخدمين من Firebase دفعة واحدة
+export async function migrateAllUsersFromFirebase(): Promise<{ success: boolean; count: number; error?: string }> {
+  try {
+    const usersSnap = await getDocs(collection(db, 'users'));
+    if (usersSnap.empty) {
+      return { success: false, count: 0, error: 'لم يتم العثور على أي حسابات في Firebase.' };
+    }
+
+    let count = 0;
+    const rowsToInsert: any[] = [];
+
+    usersSnap.forEach((docSnap) => {
+      const userData = docSnap.data();
+      const uid = docSnap.id;
+
+      rowsToInsert.push({
+        collection: 'users',
+        id: uid,
+        data: userData,
+        updated_at: new Date().toISOString()
+      });
+      count++;
+    });
+
+    const { error } = await supabase
+      .from('documents')
+      .upsert(rowsToInsert, { onConflict: 'collection,id' });
+
+    if (error) throw error;
+
+    return { success: true, count };
+  } catch (err: any) {
+    console.error('Migration error:', err);
+    return { success: false, count: 0, error: err.message };
   }
 }
