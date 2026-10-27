@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { supabase, getDocument, setDocument, subscribeToDocument } from '../supabase';
-import { logoutAccount } from '../firebase';
 import { 
   Product, 
   Customer, 
@@ -33,6 +32,29 @@ import {
 } from '../utils/deviceSession';
 import { findDuplicateGroups } from '../utils/duplicateCleaner';
 import { mergeProducts, mergeInvoices } from '../utils/syncEngine';
+import pkg from '../../package.json';
+
+// قراءة الإصدار تلقائياً من package.json
+export const CURRENT_APP_VERSION = pkg.version;
+
+// دالة مقارنة الإصدارات بدقة
+export const isVersionOutdated = (current: string, minRequired: string): boolean => {
+  try {
+    const curParts = current.split('.').map(p => parseInt(p, 10) || 0);
+    const minParts = minRequired.split('.').map(p => parseInt(p, 10) || 0);
+    const maxLen = Math.max(curParts.length, minParts.length);
+
+    for (let i = 0; i < maxLen; i++) {
+      const c = curParts[i] || 0;
+      const m = minParts[i] || 0;
+      if (c < m) return true;
+      if (c > m) return false;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+};
 
 export interface CustomBackupOptions {
   scope: 'all' | 'products_only' | 'settings_only' | 'custom';
@@ -130,7 +152,7 @@ interface AppContextType {
   syncNotice: string | null;
   setSyncNotice: (msg: string | null) => void;
   syncNow: () => Promise<void>;
-  loginUser: (user: any) => Promise<void>;
+  loginUser: (user: any) => Promise<{ success: boolean; error?: string } | void>;
   logout: () => Promise<void>;
   sessionRole: SessionRole;
   permissions: RolePermissions;
@@ -245,7 +267,6 @@ export const sanitizePayload = <T = any>(obj: T): T => {
   return obj;
 };
 
-// توافقية عكسية مع المكونات الأخرى
 export const sanitizeForFirestore = sanitizePayload;
 
 export const createDefaultDraftOrder = (orderNumber: number = 1): POSDraftOrder => {
@@ -743,8 +764,58 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       localStorage.removeItem('cached_pos_shifts');
       localStorage.removeItem('cached_pos_active_shift');
     } catch (e) {}
-    await logoutAccount();
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.warn('Supabase signOut error:', e);
+    }
   };
+
+  // نظام فحص الإصدار وحظر النسخ القديمة وطردها لحظياً
+  useEffect(() => {
+    const enforceMinimumVersion = (minVersion: string, message?: string) => {
+      if (minVersion && isVersionOutdated(CURRENT_APP_VERSION, minVersion)) {
+        alert(message || `تم إيقاف هذا الإصدار (${CURRENT_APP_VERSION}). يرجى تحميل وتثبيت التحديث الجديد.`);
+        logout();
+        return true;
+      }
+      return false;
+    };
+
+    // 1. الفحص الفوري عند بدء التطبيق
+    const checkVersionOnLaunch = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('system_settings')
+          .select('min_required_version, update_message')
+          .eq('id', 'global_config')
+          .maybeSingle();
+
+        if (data && !error) {
+          enforceMinimumVersion(data.min_required_version, data.update_message);
+        }
+      } catch (err) {
+        console.warn('Version check error on launch:', err);
+      }
+    };
+
+    checkVersionOnLaunch();
+
+    // 2. الاستماع اللحظي (Realtime) لطرد المستخدم إذا تم تعديل الإصدار وهو فاتح البرنامج
+    const versionChannel = supabase
+      .channel('system_version_guard')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'system_settings' }, (payload: any) => {
+        const newSettings = payload.new;
+        if (newSettings && (newSettings.id === 'global_config' || !newSettings.id)) {
+          enforceMinimumVersion(newSettings.min_required_version, newSettings.update_message);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(versionChannel);
+    };
+  }, []);
 
   // المزامنة والاشتراك اللحظي المباشر عبر Supabase
   useEffect(() => {
@@ -801,7 +872,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // 2. الاشتراك اللحظي في مستند المتجر واستخدام الدمج الذكي
     const storeSub = subscribeToDocument('stores', storeDocId, (newData) => {
       if (!newData) return;
-      // تجاهل الارتداد الذاتي إذا كان التحديث قادماً من نفس هذا الجهاز للتو لمنع تجميد الواجهة والتهنيج
       if (newData.lastSavedByClient && newData.lastSavedByClient === currentSessionId) {
         setIsCloudConnected(true);
         setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
@@ -864,7 +934,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }>;
   }>({ timer: null, override: {} });
 
-  // دالة الحفظ الموحدة للمتجر السحابي مع جدولة ذكية غير حاجزة لواجهة المستخدم
   const saveStoreToCloud = async (
     overridePartial?: Partial<{
       products: Product[];
@@ -1172,7 +1241,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       showRepOnInvoice,
     };
 
-    // خصم كميات كافة المواد دفعة واحدة بحركة ذرية سريعة لمنع التهنيج
     const deductionsMap = new Map<string, number>();
     items.forEach(i => {
       const delta = (i.deductedPieces ?? i.quantity);
@@ -1449,7 +1517,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const payload: Record<string, any> = {
       app: 'pos-store-system',
-      version: '2.0',
+      version: CURRENT_APP_VERSION,
       exportType: options.scope,
       exportedAt: new Date().toISOString(),
     };
@@ -1464,7 +1532,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return JSON.stringify(payload, null, 2);
   };
 
-  // استعادة النسخة الاحتياطية وحفظها فوراً في Supabase
   const importDataJSON = (jsonStr: string) => {
     try {
       const data = JSON.parse(jsonStr);
@@ -1915,9 +1982,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     updateSettings({ salesReps: updated });
   };
 
-  const loginUser = async (user: any) => {
+  const loginUser = async (user: any): Promise<{ success: boolean; error?: string } | void> => {
+    try {
+      const { data, error } = await supabase
+        .from('system_settings')
+        .select('min_required_version, update_message')
+        .eq('id', 'global_config')
+        .maybeSingle();
+
+      if (data && !error) {
+        if (isVersionOutdated(CURRENT_APP_VERSION, data.min_required_version)) {
+          const msg = data.update_message || `عذراً، إصدار البرنامج لديك (${CURRENT_APP_VERSION}) قديم جداً وتم إيقافه. يرجى تثبيت الإصدار الجديد.`;
+          alert(msg);
+          return { success: false, error: msg };
+        }
+      }
+    } catch (e) {
+      console.warn('Login version check error:', e);
+    }
+
     setCurrentUser(user);
     setAuthLoading(false);
+    return { success: true };
   };
 
   return (
