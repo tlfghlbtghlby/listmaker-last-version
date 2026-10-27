@@ -15,26 +15,17 @@
   },
   "build": {
     "appId": "com.listmanger.app",
-    "productName": "برنامج المفكر السحابي",
+    "productName": "برنامج المفكر المحاسبي",
     "directories": {
       "output": "dist-electron"
     },
-    "files": [
-      "dist/**/*",
-      "electron-main.js",
-      "electron-preload.cjs",
-      "public/**/*"
-    ],
     "win": {
-      "target": "nsis",
-      "icon": "public/icon.ico"
+      "target": "nsis"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "deleteAppDataOnUninstall": false,
-      "shortcutName": "المفكر السحابي",
-      "uninstallDisplayName": "حذف برنامج المفكر السحابي"
+      "deleteAppDataOnUninstall": false
     }
   },
   "dependencies": {
@@ -44,6 +35,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
+    "firebase": "^12.19.0",
     "html-to-image": "^1.11.13",
     "html2canvas": "^1.4.1",
     "html2canvas-pro": "^2.5.1",
