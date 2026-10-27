@@ -31,7 +31,7 @@ import {
   detectSystemInfo 
 } from '../utils/deviceSession';
 import { findDuplicateGroups } from '../utils/duplicateCleaner';
-import { mergeProducts, mergeInvoices } from '../utils/syncEngine';
+import { mergeProducts, mergeInvoices, mergeShifts } from '../utils/syncEngine';
 import pkg from '../../package.json';
 
 // قراءة الإصدار تلقائياً من package.json مع حماية
@@ -783,7 +783,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     };
 
-    // 1. الفحص الفوري عند بدء التطبيق
     const checkVersionOnLaunch = async () => {
       try {
         const { data, error } = await supabase
@@ -802,7 +801,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     checkVersionOnLaunch();
 
-    // 2. الاستماع اللحظي (Realtime) لطرد المستخدم إذا تم تعديل الإصدار وهو فاتح البرنامج
     const versionChannel = supabase
       .channel('system_version_guard')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'system_settings' }, (payload: any) => {
@@ -829,7 +827,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const currentUid = currentUser.uid;
     const storeDocId = `store_${currentUid}`;
 
-    // 1. جلب البيانات الأولية من Supabase واستخدام الدمج الذكي
     const loadInitialData = async () => {
       try {
         const storeData = await getDocument('stores', storeDocId);
@@ -853,8 +850,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             });
           }
           if (Array.isArray(storeData.shifts)) {
-            setShifts(storeData.shifts);
-            localStorage.setItem('cached_pos_shifts', JSON.stringify(storeData.shifts));
+            setShifts(prevShifts => {
+              const merged = mergeShifts(prevShifts, storeData.shifts || []);
+              try { localStorage.setItem('cached_pos_shifts', JSON.stringify(merged)); } catch {}
+              return merged;
+            });
           }
           if (storeData.settings) {
             setSettings(prev => ({ ...prev, ...storeData.settings }));
@@ -870,7 +870,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     loadInitialData();
 
-    // 2. الاشتراك اللحظي في مستند المتجر واستخدام الدمج الذكي
     const storeSub = subscribeToDocument('stores', storeDocId, (newData) => {
       if (!newData) return;
       if (newData.lastSavedByClient && newData.lastSavedByClient === currentSessionId) {
@@ -897,8 +896,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       }
       if (Array.isArray(newData.shifts)) {
-        setShifts(newData.shifts);
-        try { localStorage.setItem('cached_pos_shifts', JSON.stringify(newData.shifts)); } catch {}
+        setShifts(prevShifts => {
+          const merged = mergeShifts(prevShifts, newData.shifts || []);
+          try { localStorage.setItem('cached_pos_shifts', JSON.stringify(merged)); } catch {}
+          return merged;
+        });
       }
       if (newData.settings) {
         setSettings(prev => ({ ...prev, ...newData.settings }));
@@ -908,7 +910,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
     });
 
-    // 3. مراقبة حالة حساب المشترك (تفعيل / انتهاء اشتراك)
     const userSub = subscribeToDocument('users', currentUid, (userData) => {
       if (!userData) return;
       if (userData.isActive === false) {
@@ -923,7 +924,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, [currentUser, currentSessionId]);
 
-  // مؤقت التجميع الذكي للحفظ في السحابة في الخلفية دون حظر الواجهة
   const pendingCloudSyncRef = useRef<{
     timer: any;
     override: Partial<{
@@ -993,13 +993,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }, 450);
   };
 
+  // المزامنة الحقيقية الشاملة ثنائية الاتجاه المعتمدة على التواريخ
   const syncNow = async () => {
-    if (!currentUser) return;
+    if (!currentUser?.uid) return;
     setIsSyncing(true);
-    setSyncNotice('جاري المزامنة...');
+    setSyncNotice('جاري المزامنة مع السحابة...');
     try {
-      await saveStoreToCloud(undefined, true);
+      const storeDocId = `store_${currentUser.uid}`;
+      const cloudData = await getDocument('stores', storeDocId);
+
+      if (cloudData) {
+        // قراءة النسخ المحلية
+        const localProds = products;
+        const localInvs = invoices;
+        const localShifts = shifts;
+
+        // دمج أحدث البيانات بالاعتماد على توقيت كل عنصر
+        const mergedProds = mergeProducts(localProds, cloudData.products || []);
+        const mergedInvs = mergeInvoices(localInvs, cloudData.invoices || []);
+        const mergedShs = mergeShifts(localShifts, cloudData.shifts || []);
+        const mergedCusts = cloudData.customers || customers;
+
+        setProducts(mergedProds);
+        setInvoices(mergedInvs);
+        setShifts(mergedShs);
+        setCustomers(mergedCusts);
+
+        try {
+          localStorage.setItem('cached_pos_products', JSON.stringify(mergedProds));
+          localStorage.setItem('cached_pos_invoices', JSON.stringify(mergedInvs));
+          localStorage.setItem('cached_pos_shifts', JSON.stringify(mergedShs));
+          localStorage.setItem('cached_pos_customers', JSON.stringify(mergedCusts));
+        } catch (e) {}
+
+        // رفع النسخة المدمجة فوراً للسحابة
+        await saveStoreToCloud({
+          products: mergedProds,
+          invoices: mergedInvs,
+          shifts: mergedShs,
+          customers: mergedCusts,
+        }, true);
+      } else {
+        await saveStoreToCloud(undefined, true);
+      }
+
       setIsCloudConnected(true);
+      setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
       setSyncNotice('✅ اكتملت المزامنة بنجاح.');
       setTimeout(() => setSyncNotice(null), 3500);
     } catch {
