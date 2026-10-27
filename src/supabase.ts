@@ -1,8 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
-// ضع رابط المشروع ومفتاح Publishable key اللذين نسختهما سابقاً
 export const supabaseUrl = 'https://obodoxxzolgcwvzkkoua.supabase.co';
-export const supabaseAnonKey = 'ضع_هنا_مفتاح_sb_publishable_الخاص_بك';
+export const supabaseAnonKey = 'sb_publishable_0aNPlD59KqYsmVr8r_tMEw_wpgmlj2o';
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
@@ -38,10 +37,10 @@ export async function setDocument(collectionName: string, docId: string, docData
   }
 }
 
-// الاستماع اللحظي للتعديلات
+// دالة الاستماع اللحظي للتعديلات
 export function subscribeToDocument(collectionName: string, docId: string, callback: (data: any) => void) {
-  return supabase
-    .channel(`public:documents:${collectionName}:${docId}`)
+  const channel = supabase
+    .channel(`realtime:${collectionName}:${docId}`)
     .on(
       'postgres_changes',
       {
@@ -57,4 +56,8 @@ export function subscribeToDocument(collectionName: string, docId: string, callb
       }
     )
     .subscribe();
+
+  return {
+    unsubscribe: () => supabase.removeChannel(channel)
+  };
 }
