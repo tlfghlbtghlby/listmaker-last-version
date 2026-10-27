@@ -32,6 +32,7 @@ import {
   detectSystemInfo 
 } from '../utils/deviceSession';
 import { findDuplicateGroups } from '../utils/duplicateCleaner';
+import { mergeProducts, mergeInvoices } from '../utils/syncEngine';
 
 export interface CustomBackupOptions {
   scope: 'all' | 'products_only' | 'settings_only' | 'custom';
@@ -756,22 +757,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const currentUid = currentUser.uid;
     const storeDocId = `store_${currentUid}`;
 
-    // 1. جلب البيانات الأولية من Supabase
+    // 1. جلب البيانات الأولية من Supabase واستخدام الدمج الذكي
     const loadInitialData = async () => {
       try {
         const storeData = await getDocument('stores', storeDocId);
         if (storeData) {
           if (Array.isArray(storeData.products)) {
-            setProducts(storeData.products);
-            localStorage.setItem('cached_pos_products', JSON.stringify(storeData.products));
+            setProducts(prevProducts => {
+              const merged = mergeProducts(prevProducts, storeData.products || []);
+              try { localStorage.setItem('cached_pos_products', JSON.stringify(merged)); } catch {}
+              return merged;
+            });
           }
           if (Array.isArray(storeData.customers)) {
             setCustomers(storeData.customers);
             localStorage.setItem('cached_pos_customers', JSON.stringify(storeData.customers));
           }
           if (Array.isArray(storeData.invoices)) {
-            setInvoices(storeData.invoices);
-            localStorage.setItem('cached_pos_invoices', JSON.stringify(storeData.invoices));
+            setInvoices(prevInvoices => {
+              const merged = mergeInvoices(prevInvoices, storeData.invoices || []);
+              try { localStorage.setItem('cached_pos_invoices', JSON.stringify(merged)); } catch {}
+              return merged;
+            });
           }
           if (Array.isArray(storeData.shifts)) {
             setShifts(storeData.shifts);
@@ -791,7 +798,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     loadInitialData();
 
-    // 2. الاشتراك اللحظي في مستند المتجر
+    // 2. الاشتراك اللحظي في مستند المتجر واستخدام الدمج الذكي
     const storeSub = subscribeToDocument('stores', storeDocId, (newData) => {
       if (!newData) return;
       // تجاهل الارتداد الذاتي إذا كان التحديث قادماً من نفس هذا الجهاز للتو لمنع تجميد الواجهة والتهنيج
@@ -801,16 +808,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return;
       }
       if (Array.isArray(newData.products)) {
-        setProducts(newData.products);
-        try { localStorage.setItem('cached_pos_products', JSON.stringify(newData.products)); } catch {}
+        setProducts(prevProducts => {
+          const merged = mergeProducts(prevProducts, newData.products || []);
+          try { localStorage.setItem('cached_pos_products', JSON.stringify(merged)); } catch {}
+          return merged;
+        });
       }
       if (Array.isArray(newData.customers)) {
         setCustomers(newData.customers);
         try { localStorage.setItem('cached_pos_customers', JSON.stringify(newData.customers)); } catch {}
       }
       if (Array.isArray(newData.invoices)) {
-        setInvoices(newData.invoices);
-        try { localStorage.setItem('cached_pos_invoices', JSON.stringify(newData.invoices)); } catch {}
+        setInvoices(prevInvoices => {
+          const merged = mergeInvoices(prevInvoices, newData.invoices || []);
+          try { localStorage.setItem('cached_pos_invoices', JSON.stringify(merged)); } catch {}
+          return merged;
+        });
       }
       if (Array.isArray(newData.shifts)) {
         setShifts(newData.shifts);
@@ -938,7 +951,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: newId,
       ownerUid: currentUid,
       code: prodData.code?.trim() || `${1000 + products.length + 1}`,
-      createdAt: now,
+      createdAt: (prodData as any).createdAt || now,
       updatedAt: now,
     };
 
@@ -962,7 +975,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...item,
         id: newId,
         ownerUid: (item as any).ownerUid || currentUid,
-        createdAt: now,
+        createdAt: (item as any).createdAt || now,
         updatedAt: now,
       });
       if (onProgress && i % 100 === 0) onProgress(i, itemsData.length);
@@ -1043,7 +1056,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const t = prev.find(p => p.id === id);
       if (!t) return prev;
       const newStock = Math.max(0, Math.round((t.stock + delta) * 1000) / 1000);
-      const updated = prev.map(p => p.id === id ? { ...p, stock: newStock } : p);
+      const updated = prev.map(p => p.id === id ? { ...p, stock: newStock, updatedAt: new Date().toISOString() } : p);
       try { localStorage.setItem('cached_pos_products', JSON.stringify(updated)); } catch {}
       saveStoreToCloud({ products: updated });
       return updated;
@@ -1132,6 +1145,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ownerUid: currentUser?.uid || '',
       invoiceNumber: `INV-${new Date().getFullYear()}-${String(invoices.length + 1).padStart(4, '0')}`,
       date: now,
+      createdAt: now,
+      updatedAt: now,
       type: data.type,
       customerId: data.customerId || '',
       customerName: data.customerName || (data.type === 'direct' ? 'زبون نقدي مباشر' : 'عميل غير مسجل'),
@@ -1204,7 +1219,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     saveStoreToCloud({ 
-      products: updatedProducts,
+      products: updatedProducts, 
       invoices: updatedInvoices, 
       shifts: updatedShiftsList 
     });
@@ -1262,6 +1277,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       netProfit: 0,
       totalCost: 0,
       totalReturnedAmount: (inv.totalReturnedAmount || 0) + inv.total,
+      updatedAt: new Date().toISOString(),
     };
 
     const updatedInvoices = invoices.map(i => i.id === id ? updatedInv : i);
@@ -1365,6 +1381,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       returnedItems: [...(inv.returnedItems || []), ...newReturnedRecords],
       status: allItemsFullyReturned ? 'returned' : 'partially_returned',
       isPartiallyReturned: !allItemsFullyReturned,
+      updatedAt: now,
     };
 
     const updatedInvoices = invoices.map(i => i.id === invoiceId ? updatedInvoice : i);
