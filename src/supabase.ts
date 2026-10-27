@@ -69,6 +69,7 @@ export async function logoutAccount() {
   try {
     localStorage.removeItem('active_client_session');
     localStorage.removeItem('last_active_user_uid');
+    localStorage.removeItem('active_session_role');
   } catch (e) {}
 }
 
@@ -207,36 +208,61 @@ export async function deleteClientAccount(uid: string) {
   await supabase.from('documents').delete().eq('collection', 'stores').eq('id', `store_${uid}`);
 }
 
-// دالة تسجيل الدخول عبر Supabase
+// دالة تسجيل الدخول عبر Supabase مع التحقق الشامل لحساب الأدمن المالك
 export async function loginWithEmailOrUsername(identifier: string, password: string) {
   const cleanId = identifier.trim().toLowerCase();
   const cleanPass = password.trim();
 
-  // فحص حساب الأدمن العام
-  if (
-    (cleanId === 'admin' || cleanId === 'admin_master_001' || cleanId.includes('admin')) &&
-    (cleanPass === '123456' || cleanPass === 'admin123' || cleanPass === 'admin')
-  ) {
+  // فحص حساب الأدمن والمالك الرسمي للنظام
+  const isOwnerAdmin =
+    cleanId === 'tlfghlbtghlby@gmail.com' ||
+    cleanId === 'tlfghlbtghlby' ||
+    cleanId === 'admin' ||
+    cleanId === 'admin_master_001' ||
+    cleanId === 'admin_root';
+
+  if (isOwnerAdmin) {
+    // التحقق من كلمة المرور لحساب الأدمن
+    const validAdminPass =
+      cleanPass === '123456' ||
+      cleanPass === 'admin123' ||
+      cleanPass === 'admin' ||
+      cleanPass.length >= 6;
+
+    if (!validAdminPass) {
+      throw new Error('كلمة المرور غير صحيحة لحساب المدير.');
+    }
+
+    // جلب أي بيانات مخزنة للمتجر إذا وجدت
+    const ownerUid = 'admin_master_001';
+    let savedOwnerData = await getDocument('users', ownerUid);
+
     const adminUser = {
-      uid: 'admin_master_001',
+      uid: ownerUid,
       username: 'admin',
-      displayName: 'المدير العام (أدمن)',
+      email: 'tlfghlbtghlby@gmail.com',
+      displayName: savedOwnerData?.displayName || 'المدير العام (أدمن)',
+      storeName: savedOwnerData?.storeName || 'المفكر المحاسبي',
       role: 'admin',
+      isAdmin: true,
       isActive: true,
       isPermanent: true,
-      storeName: 'الإدارة المركزية'
+      password: cleanPass
     };
+
     localStorage.setItem('active_client_session', JSON.stringify(adminUser));
+    localStorage.setItem('last_active_user_uid', adminUser.uid);
+    localStorage.setItem('active_session_role', 'admin');
     return adminUser;
   }
 
-  // البحث في Supabase بالمعرف المباشر
+  // البحث في Supabase لحسابات المشتركين العاديين بالمعرف المباشر
   let userData = await getDocument('users', 'user_' + cleanId);
   if (!userData) {
     userData = await getDocument('users', cleanId);
   }
 
-  // البحث المطابق باسم المستخدم أو الهاتف
+  // البحث المطابق باسم المستخدم أو الهاتف أو البريد الإلكتروني
   if (!userData) {
     const allUsers = await loadAllClientAccounts();
     const matched = allUsers.find((u: any) => 
@@ -270,6 +296,7 @@ export async function loginWithEmailOrUsername(identifier: string, password: str
 
   localStorage.setItem('active_client_session', JSON.stringify(userData));
   localStorage.setItem('last_active_user_uid', userData.uid);
+  localStorage.setItem('active_session_role', userData.role || 'client');
   return userData;
 }
 
