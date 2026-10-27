@@ -354,6 +354,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isDuplicatesModalOpen, setIsDuplicatesModalOpen] = useState(false);
   const [isActiveSessionsModalOpen, setIsActiveSessionsModalOpen] = useState(false);
 
+  const [deletedProductsMap, setDeletedProductsMap] = useState<Record<string, string>>(() => {
+    try {
+      const raw = localStorage.getItem('cached_pos_deleted_products_map');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+      const oldRaw = localStorage.getItem('cached_pos_deleted_product_ids');
+      if (oldRaw) {
+        const oldArr = JSON.parse(oldRaw);
+        if (Array.isArray(oldArr)) {
+          const converted: Record<string, string> = {};
+          const nowIso = new Date().toISOString();
+          oldArr.forEach((id: string) => { converted[id] = nowIso; });
+          return converted;
+        }
+      }
+    } catch {}
+    return {};
+  });
+
+  const mergeDeletedMaps = (mapA: Record<string, string> = {}, mapB: Record<string, string> = {}) => {
+    const res: Record<string, string> = { ...mapA };
+    for (const [k, v] of Object.entries(mapB || {})) {
+      if (!res[k]) {
+        res[k] = v;
+      } else {
+        const timeA = new Date(res[k]).getTime();
+        const timeB = new Date(v).getTime();
+        if (timeB > timeA) res[k] = v;
+      }
+    }
+    return res;
+  };
+
   const [activeShift, setActiveShift] = useState<Shift | null>(() => {
     try {
       const devId = getOrCreateDeviceId();
@@ -831,9 +866,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const storeData = await getDocument('stores', storeDocId);
         if (storeData) {
+          // دمج سجل المحذوفات السحابي مع السجل المحلي
+          const combinedDeletedMap = mergeDeletedMaps(deletedProductsMap, storeData.deletedProductsMap || {});
+          setDeletedProductsMap(combinedDeletedMap);
+          try { localStorage.setItem('cached_pos_deleted_products_map', JSON.stringify(combinedDeletedMap)); } catch {}
+
           if (Array.isArray(storeData.products)) {
             setProducts(prevProducts => {
-              const merged = mergeProducts(prevProducts, storeData.products || []);
+              const merged = mergeProducts(prevProducts, storeData.products || [], combinedDeletedMap);
               try { localStorage.setItem('cached_pos_products', JSON.stringify(merged)); } catch {}
               return merged;
             });
@@ -877,9 +917,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
         return;
       }
+
+      // دمج وتطبيق سجل المحذوفات القادم من النافذة الأخرى فوراً
+      const updatedDeletedMap = mergeDeletedMaps(deletedProductsMap, newData.deletedProductsMap || {});
+      setDeletedProductsMap(updatedDeletedMap);
+      try { localStorage.setItem('cached_pos_deleted_products_map', JSON.stringify(updatedDeletedMap)); } catch {}
+
       if (Array.isArray(newData.products)) {
         setProducts(prevProducts => {
-          const merged = mergeProducts(prevProducts, newData.products || []);
+          const merged = mergeProducts(prevProducts, newData.products || [], updatedDeletedMap);
           try { localStorage.setItem('cached_pos_products', JSON.stringify(merged)); } catch {}
           return merged;
         });
@@ -945,15 +991,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }>,
     immediate: boolean = false
   ) => {
-    if (!currentUser?.uid) return;
-    const storeDocId = `store_${currentUser.uid}`;
+    const activeUid = currentUser?.uid || localStorage.getItem('last_active_user_uid') || 'offline_store';
+    const storeDocId = `store_${activeUid}`;
 
     if (overridePartial) {
       Object.assign(pendingCloudSyncRef.current.override, overridePartial);
     }
 
     const executeUpload = async () => {
-      if (!currentUser?.uid) return;
       const merged = { ...pendingCloudSyncRef.current.override };
       pendingCloudSyncRef.current.override = {};
 
@@ -964,6 +1009,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           invoices: merged.invoices ?? invoices,
           shifts: merged.shifts ?? shifts,
           settings: merged.settings ?? settings,
+          deletedProductsMap: (merged as any).deletedProductsMap ?? deletedProductsMap,
           lastSavedByClient: currentSessionId,
           updatedAt: new Date().toISOString()
         });
@@ -995,21 +1041,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // المزامنة الحقيقية الشاملة ثنائية الاتجاه المعتمدة على التواريخ
   const syncNow = async () => {
-    if (!currentUser?.uid) return;
     setIsSyncing(true);
-    setSyncNotice('جاري المزامنة مع السحابة...');
+    setSyncNotice('جاري المزامنة مع السحابة وتوحيد البيانات...');
     try {
-      const storeDocId = `store_${currentUser.uid}`;
+      const activeUid = currentUser?.uid || localStorage.getItem('last_active_user_uid') || 'offline_store';
+      const storeDocId = `store_${activeUid}`;
       const cloudData = await getDocument('stores', storeDocId);
 
       if (cloudData) {
+        // دمج سجل المحذوفات السحابي والمحلي أولاً
+        const combinedDeletedMap = mergeDeletedMaps(deletedProductsMap, cloudData.deletedProductsMap || {});
+        setDeletedProductsMap(combinedDeletedMap);
+        try { localStorage.setItem('cached_pos_deleted_products_map', JSON.stringify(combinedDeletedMap)); } catch {}
+
         // قراءة النسخ المحلية
         const localProds = products;
         const localInvs = invoices;
         const localShifts = shifts;
 
-        // دمج أحدث البيانات بالاعتماد على توقيت كل عنصر
-        const mergedProds = mergeProducts(localProds, cloudData.products || []);
+        // دمج أحدث البيانات بالاعتماد على توقيت كل عنصر مع استبعاد المحذوفات
+        const mergedProds = mergeProducts(localProds, cloudData.products || [], combinedDeletedMap);
         const mergedInvs = mergeInvoices(localInvs, cloudData.invoices || []);
         const mergedShs = mergeShifts(localShifts, cloudData.shifts || []);
         const mergedCusts = cloudData.customers || customers;
@@ -1032,6 +1083,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           invoices: mergedInvs,
           shifts: mergedShs,
           customers: mergedCusts,
+          ...({ deletedProductsMap: combinedDeletedMap } as any)
         }, true);
       } else {
         await saveStoreToCloud(undefined, true);
@@ -1039,7 +1091,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       setIsCloudConnected(true);
       setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
-      setSyncNotice('✅ اكتملت المزامنة بنجاح.');
+      setSyncNotice('✅ تم توحيد ومزامنة البيانات بنجاح.');
       setTimeout(() => setSyncNotice(null), 3500);
     } catch {
       setIsCloudConnected(false);
@@ -1107,10 +1159,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteProduct = (id: string) => {
+    const nowIso = new Date().toISOString();
+    const nextMap = { ...deletedProductsMap, [id]: nowIso };
+    setDeletedProductsMap(nextMap);
+    try {
+      localStorage.setItem('cached_pos_deleted_products_map', JSON.stringify(nextMap));
+    } catch {}
+
     const updated = products.filter(p => p.id !== id);
     setProducts(updated);
     try { localStorage.setItem('cached_pos_products', JSON.stringify(updated)); } catch {}
-    saveStoreToCloud({ products: updated });
+    saveStoreToCloud({ products: updated, ...({ deletedProductsMap: nextMap } as any) }, true);
   };
 
   const batchDeleteProducts = async (
@@ -1124,6 +1183,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const deleteSet = new Set(productIdsToDelete);
       const increments = stockIncrements || {};
+      const nowIso = new Date().toISOString();
+
+      // تحديث سجل المواد المحذوفة السحابي والمحلي بالوقت اللحظي الدقيق
+      const nextMap = { ...deletedProductsMap };
+      productIdsToDelete.forEach(id => {
+        nextMap[id] = nowIso;
+      });
+      setDeletedProductsMap(nextMap);
+      try {
+        localStorage.setItem('cached_pos_deleted_products_map', JSON.stringify(nextMap));
+      } catch {}
 
       const updatedProducts = products
         .filter(p => !deleteSet.has(p.id))
@@ -1133,7 +1203,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             return {
               ...p,
               stock: Math.max(0, Math.round(((p.stock || 0) + inc) * 1000) / 1000),
-              updatedAt: new Date().toISOString()
+              updatedAt: nowIso
             };
           }
           return p;
@@ -1148,10 +1218,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         console.warn('Failed to cache products to localStorage', e);
       }
 
+      // رفع فوري شامل للمنتجات وسجل المحذوفات إلى سحابة Supabase
       try {
-        await saveStoreToCloud({ products: updatedProducts });
+        await saveStoreToCloud({ 
+          products: updatedProducts, 
+          ...({ deletedProductsMap: nextMap } as any) 
+        }, true);
       } catch (cloudErr) {
-        console.warn('Batch delete saved locally, cloud sync pending:', cloudErr);
+        console.warn('Batch delete saved locally, cloud sync notice:', cloudErr);
       }
       return { success: true, deletedCount };
     } catch (err: any) {

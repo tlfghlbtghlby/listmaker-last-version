@@ -17,6 +17,7 @@ export const findDuplicateGroups = (products: Product[]): DuplicateProductGroup[
 
   const barcodeMap = new Map<string, Product[]>();
   const exactMap = new Map<string, Product[]>();
+  const namePriceMap = new Map<string, Product[]>();
 
   products.forEach((p) => {
     // 1. Group by code/barcode if present and not empty
@@ -41,6 +42,14 @@ export const findDuplicateGroups = (products: Product[]): DuplicateProductGroup[
     const existingExact = exactMap.get(exactKey) || [];
     existingExact.push(p);
     exactMap.set(exactKey, existingExact);
+
+    // 3. Group by Name & Selling Price
+    if (normName) {
+      const namePriceKey = `${normName}__${retail}`;
+      const existingNP = namePriceMap.get(namePriceKey) || [];
+      existingNP.push(p);
+      namePriceMap.set(namePriceKey, existingNP);
+    }
   });
 
   const processedProductIds = new Set<string>();
@@ -59,10 +68,9 @@ export const findDuplicateGroups = (products: Product[]): DuplicateProductGroup[
     };
   };
 
-  // 1. Check Barcode duplicates (remains as-is: matches identical barcode/code)
+  // 1. Check Barcode duplicates
   barcodeMap.forEach((items, code) => {
     if (items.length > 1) {
-      // Check if all items in this barcode group also match 100% data details (ignoring addition date)
       const first = items[0];
       const normFirstName = normalizeString(first.name);
       const normFirstCategory = normalizeString(first.category || 'عام');
@@ -84,11 +92,24 @@ export const findDuplicateGroups = (products: Product[]): DuplicateProductGroup[
         );
       });
 
+      const isAlsoNamePrice = items.every((i) => {
+        return (
+          normalizeString(i.name) === normFirstName &&
+          Math.round((i.retailPrice || 0) * 100) === firstRetail
+        );
+      });
+
       const { primaryItem, duplicateItems, allProducts } = sortAndSeparate(items);
-      const matchType = isAlsoExact ? 'both' : 'barcode';
-      const matchLabel = isAlsoExact
-        ? `تطابق تام في الباركود (${code}) وتشابه 100% في كافة البيانات (ما عدا تاريخ الإضافة)`
-        : `تطابق في كود المادة / الباركود (${code})`;
+      let matchType: 'barcode' | 'exact_details' | 'name_price' | 'both' = 'barcode';
+      let matchLabel = `تطابق في كود المادة / الباركود (${code})`;
+
+      if (isAlsoExact) {
+        matchType = 'both';
+        matchLabel = `تطابق تام في الباركود (${code}) وتشابه 100% في كافة البيانات (ما عدا تاريخ الإضافة)`;
+      } else if (isAlsoNamePrice) {
+        matchType = 'both';
+        matchLabel = `تطابق في الباركود (${code}) وتشابه في الاسم وسعر البيع`;
+      }
 
       duplicateGroups.push({
         id: `dup_barcode_${code}_${primaryItem.id}`,
@@ -98,6 +119,9 @@ export const findDuplicateGroups = (products: Product[]): DuplicateProductGroup[
         primaryItem,
         duplicateItems,
         allProducts,
+        isBarcodeMatch: true,
+        isExactMatch: isAlsoExact,
+        isNamePriceMatch: isAlsoNamePrice,
       });
 
       items.forEach((p) => processedProductIds.add(p.id));
@@ -117,6 +141,30 @@ export const findDuplicateGroups = (products: Product[]): DuplicateProductGroup[
         primaryItem,
         duplicateItems,
         allProducts,
+        isBarcodeMatch: false,
+        isExactMatch: true,
+        isNamePriceMatch: true, // exact details always includes identical name & price
+      });
+      unhandledItems.forEach((p) => processedProductIds.add(p.id));
+    }
+  });
+
+  // 3. Check Name & Retail Price duplicates (excluding products already grouped above)
+  namePriceMap.forEach((items) => {
+    const unhandledItems = items.filter((p) => !processedProductIds.has(p.id));
+    if (unhandledItems.length > 1) {
+      const { primaryItem, duplicateItems, allProducts } = sortAndSeparate(unhandledItems);
+      duplicateGroups.push({
+        id: `dup_name_price_${primaryItem.id}`,
+        matchType: 'name_price',
+        matchLabel: `تشابه في اسم المادة (${primaryItem.name}) وسعر البيع (${primaryItem.retailPrice || 0})`,
+        matchKey: `${primaryItem.name}_${primaryItem.retailPrice}`,
+        primaryItem,
+        duplicateItems,
+        allProducts,
+        isBarcodeMatch: false,
+        isExactMatch: false,
+        isNamePriceMatch: true,
       });
       unhandledItems.forEach((p) => processedProductIds.add(p.id));
     }

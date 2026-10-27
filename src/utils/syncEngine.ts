@@ -6,38 +6,80 @@ export interface SyncableEntity {
   [key: string]: any;
 }
 
-function getTimestamp(entity: any): number {
+export function getEntityTimestamp(entity: any): number {
   const ts = entity?.updatedAt || entity?.createdAt || entity?.date;
   if (!ts) return 0;
   const time = new Date(ts).getTime();
   return isNaN(time) ? 0 : time;
 }
 
-export function mergeProducts(localProducts: any[] = [], serverProducts: any[] = []): any[] {
+export function isItemDeleted(
+  id: string,
+  item: any,
+  deletedMap: Record<string, string> | Set<string> | string[] = {}
+): boolean {
+  if (!deletedMap) return false;
+
+  if (deletedMap instanceof Set) {
+    return deletedMap.has(id);
+  }
+
+  if (Array.isArray(deletedMap)) {
+    return deletedMap.includes(id);
+  }
+
+  const deletedAtStr = deletedMap[id];
+  if (!deletedAtStr) return false;
+
+  const delTime = new Date(deletedAtStr).getTime();
+  if (isNaN(delTime) || delTime <= 0) return true;
+
+  const itemTime = getEntityTimestamp(item);
+  // If the deletion happened at or after the item's last modification, it is deleted
+  return itemTime <= delTime;
+}
+
+export function mergeProducts(
+  localProducts: any[] = [], 
+  serverProducts: any[] = [],
+  deletedProductsMap: Record<string, string> | Set<string> | string[] = {}
+): any[] {
   const map = new Map<string, any>();
 
+  // 1. Process server products, checking against cloud tombstones
   for (const item of serverProducts) {
     if (item && item.id !== undefined && item.id !== null) {
-      map.set(String(item.id), item);
+      const idStr = String(item.id);
+      if (isItemDeleted(idStr, item, deletedProductsMap)) {
+        continue;
+      }
+      map.set(idStr, item);
     }
   }
 
+  // 2. Process local products
   for (const localItem of localProducts) {
     if (!localItem || localItem.id === undefined || localItem.id === null) continue;
 
-    const id = String(localItem.id);
-    const serverItem = map.get(id);
+    const idStr = String(localItem.id);
+    if (isItemDeleted(idStr, localItem, deletedProductsMap)) {
+      continue;
+    }
+
+    const serverItem = map.get(idStr);
 
     if (!serverItem) {
-      map.set(id, localItem);
+      // Local product that doesn't exist on server yet (and not in deleted tombstones)
+      map.set(idStr, localItem);
     } else {
-      const localTime = getTimestamp(localItem);
-      const serverTime = getTimestamp(serverItem);
+      // Both exist: pick the one with the latest timestamp
+      const localTime = getEntityTimestamp(localItem);
+      const serverTime = getEntityTimestamp(serverItem);
 
       if (localTime > serverTime) {
-        map.set(id, localItem);
+        map.set(idStr, localItem);
       } else {
-        map.set(id, serverItem);
+        map.set(idStr, serverItem);
       }
     }
   }
@@ -62,8 +104,8 @@ export function mergeInvoices(localInvoices: any[] = [], serverInvoices: any[] =
 
   const mergedList = Array.from(map.values());
   mergedList.sort((a, b) => {
-    const timeA = getTimestamp(a);
-    const timeB = getTimestamp(b);
+    const timeA = getEntityTimestamp(a);
+    const timeB = getEntityTimestamp(b);
     return timeB - timeA;
   });
 

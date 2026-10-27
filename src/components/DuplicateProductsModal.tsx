@@ -11,7 +11,8 @@ import {
   Check, 
   RefreshCw,
   Copy,
-  ArrowRight
+  ArrowRight,
+  Tag
 } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { Product } from '../types';
@@ -37,7 +38,7 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
   const [selectedDuplicateIds, setSelectedDuplicateIds] = useState<Set<string>>(new Set());
   const [mergeStockOnClean, setMergeStockOnClean] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [filterType, setFilterType] = useState<'all' | 'barcode' | 'exact'>('all');
+  const [filterType, setFilterType] = useState<'all' | 'barcode' | 'exact' | 'name_price'>('all');
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>(null);
 
@@ -48,14 +49,18 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
   }, [products, isOpen]);
 
   // Filtered groups:
-  // - barcode: matches identical barcode (keeps barcode match intact)
+  // - barcode: matches identical barcode
   // - exact: matches 100% data details except addition date (createdAt)
+  // - name_price: matches name and retail price
   const filteredGroups = useMemo(() => {
     if (filterType === 'barcode') {
-      return duplicateGroups.filter(g => g.matchType === 'barcode' || g.matchType === 'both');
+      return duplicateGroups.filter(g => g.isBarcodeMatch || g.matchType === 'barcode' || g.matchType === 'both');
     }
     if (filterType === 'exact') {
-      return duplicateGroups.filter(g => g.matchType === 'exact_details' || g.matchType === 'both');
+      return duplicateGroups.filter(g => g.isExactMatch || g.matchType === 'exact_details' || g.matchType === 'both');
+    }
+    if (filterType === 'name_price') {
+      return duplicateGroups.filter(g => g.isNamePriceMatch || g.matchType === 'name_price');
     }
     return duplicateGroups;
   }, [duplicateGroups, filterType]);
@@ -63,13 +68,19 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
   // Counts of duplicate items for filter tabs
   const barcodeDuplicateItemsCount = useMemo(() => {
     return duplicateGroups
-      .filter(g => g.matchType === 'barcode' || g.matchType === 'both')
+      .filter(g => g.isBarcodeMatch || g.matchType === 'barcode' || g.matchType === 'both')
       .reduce((sum, g) => sum + g.duplicateItems.length, 0);
   }, [duplicateGroups]);
 
   const exactDuplicateItemsCount = useMemo(() => {
     return duplicateGroups
-      .filter(g => g.matchType === 'exact_details' || g.matchType === 'both')
+      .filter(g => g.isExactMatch || g.matchType === 'exact_details' || g.matchType === 'both')
+      .reduce((sum, g) => sum + g.duplicateItems.length, 0);
+  }, [duplicateGroups]);
+
+  const namePriceDuplicateItemsCount = useMemo(() => {
+    return duplicateGroups
+      .filter(g => g.isNamePriceMatch || g.matchType === 'name_price')
       .reduce((sum, g) => sum + g.duplicateItems.length, 0);
   }, [duplicateGroups]);
 
@@ -87,6 +98,7 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
   const currentTabTitle = useMemo(() => {
     if (filterType === 'barcode') return 'قسم تطابق الباركود';
     if (filterType === 'exact') return 'قسم تشابه 100% بالبيانات';
+    if (filterType === 'name_price') return 'قسم تشابه في الاسم والسعر';
     return 'كافة الأقسام';
   }, [filterType]);
 
@@ -250,7 +262,7 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
                 )}
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                فحص المواد المتطابقة في الباركود أو المتطابقة بنسبة 100% في بياناتها (ما عدا تاريخ الإضافة) مع إمكانية مراجعتها وتنظيفها.
+                فحص المواد المتطابقة في الباركود، أو المتطابقة بنسبة 100% في بياناتها (ما عدا تاريخ الإضافة)، أو المتشابهة في الاسم والسعر مع إمكانية مراجعتها وتنظيفها.
               </p>
             </div>
           </div>
@@ -324,11 +336,11 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
         {/* Filter & Batch Actions Bar */}
         <div className="p-3.5 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3">
           {/* Filter Type */}
-          <div className="flex items-center gap-1.5 bg-white p-1 rounded-xl border border-slate-200">
+          <div className="flex items-center gap-1.5 bg-white p-1 rounded-xl border border-slate-200 overflow-x-auto scrollbar-none">
             <button
               type="button"
               onClick={() => setFilterType('all')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer whitespace-nowrap ${
                 filterType === 'all'
                   ? 'bg-slate-900 text-white'
                   : 'text-slate-600 hover:text-slate-900'
@@ -339,7 +351,7 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
             <button
               type="button"
               onClick={() => setFilterType('barcode')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
                 filterType === 'barcode'
                   ? 'bg-amber-600 text-white'
                   : 'text-slate-600 hover:text-slate-900'
@@ -351,7 +363,7 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
             <button
               type="button"
               onClick={() => setFilterType('exact')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
                 filterType === 'exact'
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-600 hover:text-slate-900'
@@ -359,6 +371,18 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
             >
               <Copy className="w-3.5 h-3.5" />
               <span>تشابه 100% بالبيانات ما عدا تاريخ الإضافة ({exactDuplicateItemsCount} مكرر)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setFilterType('name_price')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                filterType === 'name_price'
+                  ? 'bg-teal-700 text-white'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Tag className="w-3.5 h-3.5" />
+              <span>تشابه في الاسم والسعر ({namePriceDuplicateItemsCount} مكرر)</span>
             </button>
           </div>
 
@@ -614,6 +638,8 @@ export const DuplicateProductsModal: React.FC<DuplicateProductsModalProps> = ({
                     ? `تنظيف وحذف كافة مكررات الباركود (${activeTabDuplicateCount})`
                     : filterType === 'exact'
                     ? `تنظيف وحذف كافة مكررات تشابه 100% (${activeTabDuplicateCount})`
+                    : filterType === 'name_price'
+                    ? `تنظيف وحذف كافة مكررات الاسم والسعر (${activeTabDuplicateCount})`
                     : `تنظيف وحذف كافة المكررات (${activeTabDuplicateCount})`}
                 </span>
               </button>

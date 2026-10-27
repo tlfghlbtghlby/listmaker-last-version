@@ -274,7 +274,7 @@ export const InventoryView: React.FC<InventoryViewProps> = ({
                   ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300 ring-2 ring-amber-400/30 shadow-2xs'
                   : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
               }`}
-              title="كشف المواد المكررة بالباركود أو المتطابقة بنسبة 100% وإلغاؤها وحذفها"
+              title="كشف المواد المكررة بالباركود، أو المتطابقة 100% بالبيانات وإلغاؤها وحذفها"
             >
               <Copy className="w-3.5 h-3.5 text-amber-600" />
               <span>فحص المواد المكررة</span>

@@ -208,12 +208,15 @@ export interface DeviceSession {
 // مجموعة المواد المكررة للمراجعة والحذف
 export interface DuplicateProductGroup {
   id: string; // معرف المجموعة
-  matchType: 'barcode' | 'exact_details' | 'both'; // سبب التطابق: باركود أو تشابه كامل
+  matchType: 'barcode' | 'exact_details' | 'name_price' | 'both'; // سبب التطابق
   matchLabel: string; // وصف سبب التطابق بالعربية
   matchKey: string; // القيمة المطابقة
   primaryItem: Product; // المادة الأساسية (الأقدم أو ذات المخزون)
   duplicateItems: Product[]; // المواد المكررة المقترح حذفها
   allProducts: Product[]; // جميع المواد في المجموعة
+  isBarcodeMatch?: boolean;
+  isExactMatch?: boolean;
+  isNamePriceMatch?: boolean;
 }
 
 // قالب شفت معد مسبقاً له اسم ورمز سري خاص

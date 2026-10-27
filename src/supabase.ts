@@ -315,7 +315,7 @@ export async function loginWithEmailOrUsername(identifier: string, password: str
   return userData;
 }
 
-// دالة ترحيل المستخدمين من Firebase
+// دالة ترحيل المستخدمين والمخازن من Firebase إلى Supabase
 export async function migrateAllUsersFromFirebase(): Promise<{ success: boolean; count: number; error?: string }> {
   try {
     const usersSnap = await getDocs(collection(db, 'users'));
@@ -326,7 +326,7 @@ export async function migrateAllUsersFromFirebase(): Promise<{ success: boolean;
     let count = 0;
     const rowsToInsert: any[] = [];
 
-    usersSnap.forEach((docSnap) => {
+    for (const docSnap of usersSnap.docs) {
       const userData = docSnap.data();
       const uid = docSnap.id;
 
@@ -337,7 +337,19 @@ export async function migrateAllUsersFromFirebase(): Promise<{ success: boolean;
         updated_at: new Date().toISOString()
       });
       count++;
-    });
+
+      try {
+        const storeSubSnap = await getDocs(collection(db, 'users', uid, 'store'));
+        storeSubSnap.forEach((sDoc) => {
+          rowsToInsert.push({
+            collection: 'stores',
+            id: `store_${uid}`,
+            data: sDoc.data(),
+            updated_at: new Date().toISOString()
+          });
+        });
+      } catch (e) {}
+    }
 
     const { error } = await supabase
       .from('documents')
