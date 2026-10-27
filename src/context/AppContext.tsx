@@ -1,20 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { 
-  collection, 
-  doc, 
-  onSnapshot, 
-  setDoc, 
-  updateDoc, 
-  deleteDoc, 
-  enableNetwork, 
-  getDoc, 
-  getDocs, 
-  query, 
-  where, 
-  writeBatch 
-} from 'firebase/firestore';
-import { db, logoutAccount, getActiveLocalSession } from '../firebase';
-import { User } from 'firebase/auth';
+import { supabase, getDocument, setDocument, subscribeToDocument } from '../supabase';
+import { logoutAccount } from '../firebase';
 import { 
   Product, 
   Customer, 
@@ -176,9 +162,6 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const MUNTAZAR_UID = "0A6uEqBONPdjOjAEFO0pgfyTs082";
-const ALT_MUNTAZAR_UID = "LS8HLUUCZUbYvMoP7lZLAY9Zghf1";
-
 const defaultEmptySettings: StoreSettings = {
   storeName: 'برنامج المفكر المحاسبي',
   ownerName: '',
@@ -246,14 +229,14 @@ const defaultEmptySettings: StoreSettings = {
   theme: 'dark',
 };
 
-export const sanitizeForFirestore = <T = any>(obj: T): T => {
+export const sanitizePayload = <T = any>(obj: T): T => {
   if (obj === null || obj === undefined) return null as any;
   if (obj instanceof Date) return obj.toISOString() as any;
-  if (Array.isArray(obj)) return obj.filter(i => i !== undefined).map(i => sanitizeForFirestore(i)) as any;
+  if (Array.isArray(obj)) return obj.filter(i => i !== undefined).map(i => sanitizePayload(i)) as any;
   if (typeof obj === 'object') {
     const clean: Record<string, any> = {};
     for (const [k, v] of Object.entries(obj)) {
-      if (v !== undefined) clean[k] = sanitizeForFirestore(v);
+      if (v !== undefined) clean[k] = sanitizePayload(v);
     }
     return clean as any;
   }
@@ -391,7 +374,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (parsed.theme === 'light' || parsed.theme === 'dark') return parsed.theme;
       }
     } catch {}
-    return 'dark'; // الوضع الداكن هو الافتراضي ليتطابق مع فخامة شعار المفكر سمارت
+    return 'dark';
   });
 
   useEffect(() => {
@@ -711,30 +694,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const uid = currentUser?.uid;
         if (uid) {
-          const userDocSnap = await getDoc(doc(db, 'users', uid));
-          if (userDocSnap.exists()) {
-            const data = userDocSnap.data();
-            if (data?.password && String(data.password).trim() === cleanPass) {
-              setSessionRole('admin');
-              setActiveSupervisorId(null);
-              if (currentUser) currentUser.password = cleanPass;
-              try { 
-                localStorage.setItem('active_session_role', 'admin'); 
-                localStorage.setItem('last_known_account_password', cleanPass);
-                localStorage.removeItem('active_supervisor_id');
-                const s = localStorage.getItem('active_client_session');
-                if (s) {
-                  const parsed = JSON.parse(s);
-                  parsed.password = cleanPass;
-                  localStorage.setItem('active_client_session', JSON.stringify(parsed));
-                }
-              } catch {}
-              return { success: true };
-            }
+          const userData = await getDocument('users', uid);
+          if (userData?.password && String(userData.password).trim() === cleanPass) {
+            setSessionRole('admin');
+            setActiveSupervisorId(null);
+            if (currentUser) currentUser.password = cleanPass;
+            try { 
+              localStorage.setItem('active_session_role', 'admin'); 
+              localStorage.setItem('last_known_account_password', cleanPass);
+              localStorage.removeItem('active_supervisor_id');
+            } catch {}
+            return { success: true };
           }
         }
       } catch (e) {
-        console.warn('Firestore admin verification fallback:', e);
+        console.warn('Supabase admin password check notice:', e);
       }
 
       return { success: false, error: 'رمز الحساب غير صحيح. يرجى التأكد من كلمة المرور.' };
@@ -747,81 +721,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
-
-  const processPendingQueue = async () => {
-    if (!navigator.onLine || !currentUser?.uid) return;
-
-    const pendingKey = `pending_sync_products_${currentUser.uid}`;
-    const raw = localStorage.getItem(pendingKey);
-    if (!raw) return;
-
-    try {
-      const itemsToUpload: Product[] = JSON.parse(raw);
-      if (itemsToUpload.length === 0) return;
-
-      setIsSyncing(true);
-      const batchSize = 100;
-      const chunk = itemsToUpload.slice(0, batchSize);
-      const batch = writeBatch(db);
-
-      chunk.forEach(p => {
-        const ref = doc(db, 'items', p.id);
-        batch.set(ref, sanitizeForFirestore(p), { merge: true });
-      });
-
-      await batch.commit();
-
-      const remaining = itemsToUpload.filter(i => !chunk.some(c => c.id === i.id));
-      if (remaining.length > 0) {
-        localStorage.setItem(pendingKey, JSON.stringify(remaining));
-      } else {
-        localStorage.removeItem(pendingKey);
-      }
-
-      setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
-      setSyncNotice(`✅ تم بنجاح رفع ${chunk.length} مادة معلقة إلى السحابة.`);
-      setTimeout(() => setSyncNotice(null), 4000);
-    } catch (err: any) {
-      const errStr = String(err?.message || err?.code || '');
-      if (errStr.includes('resource-exhausted') || err?.code === 'resource-exhausted') {
-        console.warn('⚠️ الحد السحابي لـ Firebase ممتلئ حالياً. ستتم إعادة المحاولة آلياً لاحقاً.');
-      } else {
-        console.warn('Pending sync error:', err);
-      }
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  useEffect(() => {
-    const handleOnline = async () => {
-      setIsCloudConnected(true);
-      setSyncNotice('✅ عاد الاتصال: جاري المزامنة التلقائية مع السحابة...');
-      try {
-        await enableNetwork(db);
-        await processPendingQueue();
-      } catch (err) {
-        console.warn('Sync trigger error:', err);
-      }
-    };
-
-    const handleOffline = () => {
-      setIsCloudConnected(false);
-      setSyncNotice('⚡ أنت تعمل في الوضع المحلي الدائم (بدون إنترنت). بياناتك وجلستك محفوظة على القرص.');
-      setTimeout(() => setSyncNotice(null), 4000);
-    };
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    const interval = setInterval(processPendingQueue, 10 * 60 * 1000);
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-      clearInterval(interval);
-    };
-  }, [currentUser]);
 
   const logout = async () => {
     setCurrentUser(null);
@@ -842,6 +741,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await logoutAccount();
   };
 
+  // المزامنة والاشتراك اللحظي المباشر عبر Supabase
   useEffect(() => {
     if (!currentUser) {
       setAuthLoading(false);
@@ -850,298 +750,121 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setAuthLoading(false);
     const currentUid = currentUser.uid;
-    const isMuntazar = currentUid === MUNTAZAR_UID || currentUid === ALT_MUNTAZAR_UID || currentUser.username === 'muntazar' || currentUser.username === 'montazar';
+    const storeDocId = `store_${currentUid}`;
 
-    let unsubUserDoc = () => {};
-    let statusCheckInterval: any = null;
-
-    const isAdmin = currentUser.role === 'admin' || 
-                    currentUid === 'admin_master_001' || 
-                    currentUid === 'admin_root' || 
-                    currentUser.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
-
-    // مراقبة تلقائية خاصة بحسابات المشتركين (غير المدير العام): التحقق من الحذف أو التعطيل أو انتهاء الصلاحية التجريبية
-    if (!isAdmin) {
-      // 1. فحص فوري ومستمر محلياً (Offline-First) لانتهاء الفترة التجريبية أو الاشتراك
-      const checkLocalExpiry = () => {
-        if (currentUser && currentUser.isPermanent !== true && currentUser.trialExpiresAt) {
-          const expiresMs = new Date(currentUser.trialExpiresAt).getTime();
-          if (expiresMs > 0 && expiresMs < Date.now()) {
-            try {
-              sessionStorage.setItem('auth_logout_reason', 'trial_expired');
-            } catch (e) {}
-            logout();
-            return true;
+    // 1. جلب البيانات الأولية من Supabase
+    const loadInitialData = async () => {
+      try {
+        const storeData = await getDocument('stores', storeDocId);
+        if (storeData) {
+          if (Array.isArray(storeData.products)) {
+            setProducts(storeData.products);
+            localStorage.setItem('cached_pos_products', JSON.stringify(storeData.products));
+          }
+          if (Array.isArray(storeData.customers)) {
+            setCustomers(storeData.customers);
+            localStorage.setItem('cached_pos_customers', JSON.stringify(storeData.customers));
+          }
+          if (Array.isArray(storeData.invoices)) {
+            setInvoices(storeData.invoices);
+            localStorage.setItem('cached_pos_invoices', JSON.stringify(storeData.invoices));
+          }
+          if (Array.isArray(storeData.shifts)) {
+            setShifts(storeData.shifts);
+            localStorage.setItem('cached_pos_shifts', JSON.stringify(storeData.shifts));
+          }
+          if (storeData.settings) {
+            setSettings(prev => ({ ...prev, ...storeData.settings }));
+            localStorage.setItem('cached_pos_settings', JSON.stringify(storeData.settings));
           }
         }
-        return false;
-      };
-
-      if (checkLocalExpiry()) return;
-
-      unsubUserDoc = onSnapshot(doc(db, 'users', currentUid), (snap) => {
-        if (!snap.exists()) {
-          try {
-            sessionStorage.setItem('auth_logout_reason', 'deleted');
-          } catch (e) {}
-          logout();
-          return;
-        }
-        const data = snap.data();
-        if (data && data.isActive === false) {
-          try {
-            sessionStorage.setItem('auth_logout_reason', 'disabled');
-          } catch (e) {}
-          logout();
-          return;
-        }
-        if (data && data.isPermanent !== true && data.trialExpiresAt) {
-          const expMs = new Date(data.trialExpiresAt).getTime();
-          if (expMs > 0 && expMs < Date.now()) {
-            try {
-              sessionStorage.setItem('auth_logout_reason', 'trial_expired');
-            } catch (e) {}
-            logout();
-            return;
-          }
-        }
-      }, (err) => {
-        console.warn('User status snapshot error:', err);
-      });
-
-      statusCheckInterval = setInterval(async () => {
-        if (checkLocalExpiry()) return;
-
-        try {
-          const res = await fetch(`/api/auth/user-status/${encodeURIComponent(currentUid)}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.success) {
-              if (data.exists === false) {
-                try {
-                  sessionStorage.setItem('auth_logout_reason', 'deleted');
-                } catch (e) {}
-                logout();
-              } else if (data.isActive === false) {
-                try {
-                  sessionStorage.setItem('auth_logout_reason', 'disabled');
-                } catch (e) {}
-                logout();
-              } else if (data.isTrialExpired) {
-                try {
-                  sessionStorage.setItem('auth_logout_reason', 'trial_expired');
-                } catch (e) {}
-                logout();
-              } else {
-                // مزامنة أحدث بيانات الاشتراك محلياً حتى تظل الصلاحيات المحدثة متوفرة أوفلاين
-                if (
-                  (data.trialExpiresAt && data.trialExpiresAt !== currentUser.trialExpiresAt) ||
-                  (data.isPermanent !== undefined && data.isPermanent !== currentUser.isPermanent) ||
-                  (data.subscriptionType && data.subscriptionType !== currentUser.subscriptionType)
-                ) {
-                  setCurrentUser((prev: any) => {
-                    if (!prev) return prev;
-                    const updated = {
-                      ...prev,
-                      trialExpiresAt: data.trialExpiresAt ?? prev.trialExpiresAt,
-                      isPermanent: data.isPermanent ?? prev.isPermanent,
-                      subscriptionType: data.subscriptionType ?? prev.subscriptionType,
-                    };
-                    try {
-                      localStorage.setItem('active_client_session', JSON.stringify(updated));
-                    } catch (e) {}
-                    return updated;
-                  });
-                }
-              }
-            }
-          }
-        } catch (e) {}
-      }, 3000);
-    }
-
-    const itemsQuery = isMuntazar 
-      ? query(collection(db, 'items'), where('ownerUid', 'in', [MUNTAZAR_UID, ALT_MUNTAZAR_UID]))
-      : query(collection(db, 'items'), where('ownerUid', '==', currentUid));
-
-    const unsubItems = onSnapshot(itemsQuery, (snap) => {
-      if (snap.metadata.fromCache && snap.empty && products.length > 0) {
-        return;
+        setIsCloudConnected(true);
+        setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
+      } catch (err) {
+        console.warn('Initial Supabase fetch error:', err);
       }
+    };
 
-      const serverList = snap.docs.map(d => ({ id: d.id, ...d.data() } as Product));
+    loadInitialData();
 
-      setProducts(prevLocal => {
-        const itemMap = new Map<string, Product>();
-        prevLocal.forEach(p => itemMap.set(p.id, p));
-
-        serverList.forEach(sItem => {
-          const existing = itemMap.get(sItem.id);
-          if (!existing) {
-            itemMap.set(sItem.id, sItem);
-          } else {
-            const serverDate = new Date(sItem.updatedAt || 0).getTime();
-            const localDate = new Date(existing.updatedAt || 0).getTime();
-            if (serverDate >= localDate) {
-              itemMap.set(sItem.id, sItem);
-            }
-          }
-        });
-
-        const merged = Array.from(itemMap.values());
-        try {
-          localStorage.setItem('cached_pos_products', JSON.stringify(merged));
-        } catch (e) {}
-        return merged;
-      });
-
+    // 2. الاشتراك اللحظي في مستند المتجر
+    const storeSub = subscribeToDocument('stores', storeDocId, (newData) => {
+      if (!newData) return;
+      if (Array.isArray(newData.products)) {
+        setProducts(newData.products);
+        try { localStorage.setItem('cached_pos_products', JSON.stringify(newData.products)); } catch {}
+      }
+      if (Array.isArray(newData.customers)) {
+        setCustomers(newData.customers);
+        try { localStorage.setItem('cached_pos_customers', JSON.stringify(newData.customers)); } catch {}
+      }
+      if (Array.isArray(newData.invoices)) {
+        setInvoices(newData.invoices);
+        try { localStorage.setItem('cached_pos_invoices', JSON.stringify(newData.invoices)); } catch {}
+      }
+      if (Array.isArray(newData.shifts)) {
+        setShifts(newData.shifts);
+        try { localStorage.setItem('cached_pos_shifts', JSON.stringify(newData.shifts)); } catch {}
+      }
+      if (newData.settings) {
+        setSettings(prev => ({ ...prev, ...newData.settings }));
+        try { localStorage.setItem('cached_pos_settings', JSON.stringify(newData.settings)); } catch {}
+      }
       setIsCloudConnected(true);
       setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
-    }, (err) => {
-      console.warn('Items listener notice:', err);
-      setIsCloudConnected(false);
     });
 
-    const invoicesQuery = isMuntazar
-      ? query(collection(db, 'invoices'), where('ownerUid', 'in', [MUNTAZAR_UID, ALT_MUNTAZAR_UID]))
-      : query(collection(db, 'invoices'), where('ownerUid', '==', currentUid));
-
-    const unsubInv = onSnapshot(invoicesQuery, (snap) => {
-      if (snap.metadata.fromCache && snap.empty && invoices.length > 0) return;
-      const serverList = snap.docs.map(d => ({ id: d.id, ...d.data() } as Invoice));
-
-      setInvoices(prevLocal => {
-        const invMap = new Map<string, Invoice>();
-        prevLocal.forEach(i => invMap.set(i.id, i));
-        serverList.forEach(s => invMap.set(s.id, s));
-        const merged = Array.from(invMap.values());
-        try { localStorage.setItem('cached_pos_invoices', JSON.stringify(merged)); } catch (e) {}
-        return merged;
-      });
-    }, () => {});
-
-    const customersQuery = isMuntazar
-      ? query(collection(db, 'customers'), where('ownerUid', 'in', [MUNTAZAR_UID, ALT_MUNTAZAR_UID]))
-      : query(collection(db, 'customers'), where('ownerUid', '==', currentUid));
-
-    const unsubCust = onSnapshot(customersQuery, (snap) => {
-      if (snap.metadata.fromCache && snap.empty && customers.length > 0) return;
-      const serverList = snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer));
-
-      setCustomers(prevLocal => {
-        const custMap = new Map<string, Customer>();
-        prevLocal.forEach(c => custMap.set(c.id, c));
-        serverList.forEach(c => custMap.set(c.id, c));
-        const merged = Array.from(custMap.values());
-        try { localStorage.setItem('cached_pos_customers', JSON.stringify(merged)); } catch (e) {}
-        return merged;
-      });
-    }, () => {});
-
-    const settingsDocId = isMuntazar ? 'store_settings' : `settings_${currentUid}`;
-    const unsubSettings = onSnapshot(doc(db, 'settings', settingsDocId), (snap) => {
-      if (snap.exists()) {
-        const loaded = snap.data() as StoreSettings;
-        setSettings(prev => {
-          const combined = { ...prev, ...loaded };
-          try {
-            localStorage.setItem('cached_pos_settings', JSON.stringify(combined));
-          } catch (e) {}
-          return combined;
-        });
+    // 3. مراقبة حالة حساب المشترك (تفعيل / انتهاء اشتراك)
+    const userSub = subscribeToDocument('users', currentUid, (userData) => {
+      if (!userData) return;
+      if (userData.isActive === false) {
+        sessionStorage.setItem('auth_logout_reason', 'disabled');
+        logout();
       }
-    }, () => {});
-
-    const shiftsQuery = isMuntazar
-      ? query(collection(db, 'shifts'), where('ownerUid', 'in', [MUNTAZAR_UID, ALT_MUNTAZAR_UID]))
-      : query(collection(db, 'shifts'), where('ownerUid', '==', currentUid));
-
-    const unsubShifts = onSnapshot(shiftsQuery, (snap) => {
-      if (snap.metadata.fromCache && snap.empty && shifts.length > 0) return;
-      const list = snap.docs
-        .map(d => ({ id: d.id, ...d.data() } as Shift))
-        .sort((a, b) => new Date(b.startTime || b.createdAt).getTime() - new Date(a.startTime || a.createdAt).getTime());
-      
-      setShifts(list);
-      try {
-        localStorage.setItem('cached_pos_shifts', JSON.stringify(list));
-      } catch (e) {}
-
-      // العثور على الشفت النشط الخاص بهذا الجهاز والجلسة المحددة لضمان استقلالية وتزامن الشفتات في نفس الوقت
-      const myRunningShift = list.find((s: Shift) => 
-        s.status === 'active' && 
-        (s.deviceId === currentDeviceId || s.sessionId === currentSessionId)
-      );
-
-      if (myRunningShift) {
-        setActiveShift(myRunningShift);
-        try {
-          localStorage.setItem(`cached_pos_active_shift_${currentDeviceId}`, JSON.stringify(myRunningShift));
-          localStorage.setItem('cached_pos_active_shift', JSON.stringify(myRunningShift));
-        } catch (e) {}
-      } else {
-        setActiveShift(prev => {
-          if (prev && prev.deviceId === currentDeviceId && !list.some(s => s.id === prev.id && s.status === 'active')) {
-            try {
-              localStorage.removeItem(`cached_pos_active_shift_${currentDeviceId}`);
-              localStorage.removeItem('cached_pos_active_shift');
-            } catch (e) {}
-            return null;
-          }
-          return (prev && prev.status === 'active' && prev.deviceId === currentDeviceId) ? prev : null;
-        });
-      }
-    }, () => {});
+    });
 
     return () => {
-      unsubItems();
-      unsubInv();
-      unsubCust();
-      unsubSettings();
-      unsubShifts();
-      unsubUserDoc();
-      if (statusCheckInterval) clearInterval(statusCheckInterval);
+      storeSub.unsubscribe();
+      userSub.unsubscribe();
     };
   }, [currentUser]);
+
+  // دالة الحفظ الموحدة للمتجر السحابي
+  const saveStoreToCloud = async (overridePartial?: Partial<{
+    products: Product[];
+    customers: Customer[];
+    invoices: Invoice[];
+    shifts: Shift[];
+    settings: StoreSettings;
+  }>) => {
+    if (!currentUser?.uid) return;
+    const storeDocId = `store_${currentUser.uid}`;
+    const payload = sanitizePayload({
+      products: overridePartial?.products ?? products,
+      customers: overridePartial?.customers ?? customers,
+      invoices: overridePartial?.invoices ?? invoices,
+      shifts: overridePartial?.shifts ?? shifts,
+      settings: overridePartial?.settings ?? settings,
+      updatedAt: new Date().toISOString()
+    });
+
+    await setDocument('stores', storeDocId, payload);
+    setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
+  };
 
   const syncNow = async () => {
     if (!currentUser) return;
     setIsSyncing(true);
-    setSyncNotice('جاري فحص ورفع المواد إلى السيرفر...');
-
+    setSyncNotice('جاري المزامنة مع سحابة Supabase...');
     try {
-      await enableNetwork(db);
-
-      const batchSize = 200;
-      let uploadedCount = 0;
-
-      for (let i = 0; i < products.length; i += batchSize) {
-        const chunk = products.slice(i, i + batchSize);
-        const batch = writeBatch(db);
-
-        chunk.forEach(prod => {
-          const ref = doc(db, 'items', prod.id);
-          const sanitized = sanitizeForFirestore({
-            ...prod,
-            ownerUid: prod.ownerUid || currentUser.uid,
-            updatedAt: prod.updatedAt || new Date().toISOString()
-          });
-          batch.set(ref, sanitized, { merge: true });
-        });
-
-        await batch.commit();
-        uploadedCount += chunk.length;
-      }
-
+      await saveStoreToCloud();
       setIsCloudConnected(true);
-      setLastSyncTime(new Date().toLocaleTimeString('ar-IQ'));
-      setSyncNotice(`✅ اكتملت المزامنة بنجاح: تم تثبيت ${uploadedCount} مادة في السيرفر.`);
-      setTimeout(() => setSyncNotice(null), 4000);
-    } catch (err: any) {
-      console.error('Error during manual syncNow:', err);
+      setSyncNotice('✅ اكتملت المزامنة بنجاح وبدون أي قيود عمليات.');
+      setTimeout(() => setSyncNotice(null), 3500);
+    } catch {
       setIsCloudConnected(false);
-      setSyncNotice('تعذر إكمال الرفع، يرجى فحص الاتصال بالإنترنت.');
-      setTimeout(() => setSyncNotice(null), 4000);
+      setSyncNotice('تعذر الاتصال بالسحابة، يرجى فحص الإنترنت.');
+      setTimeout(() => setSyncNotice(null), 3500);
     } finally {
       setIsSyncing(false);
     }
@@ -1163,33 +886,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const updated = [newProduct, ...products];
     setProducts(updated);
+    try { localStorage.setItem('cached_pos_products', JSON.stringify(updated)); } catch {}
 
-    try { 
-      localStorage.setItem('cached_pos_products', JSON.stringify(updated));
-      const pendingKey = `pending_sync_products_${currentUid}`;
-      const pending: Product[] = JSON.parse(localStorage.getItem(pendingKey) || '[]');
-      if (!pending.some(p => p.id === newProduct.id)) {
-        pending.push(newProduct);
-        localStorage.setItem(pendingKey, JSON.stringify(pending));
-      }
-    } catch (e) {}
-
-    const ref = doc(db, 'items', newId);
-    setDoc(ref, sanitizeForFirestore(newProduct), { merge: true }).catch((err: any) => {
-      const errorMsg = String(err?.message || err?.code || '');
-      if (errorMsg.includes('resource-exhausted') || errorMsg.includes('quota') || err?.code === 'resource-exhausted') {
-        console.warn('⚠️ الحد السحابي لـ Firebase ممتلئ، تم تأمين المادة محلياً في طابور الرفع التلقائي.');
-        setSyncNotice('⚡ الحد السحابي ممتلئ: تم حفظ المادة داخل الحاسوب وستُرفع تلقائياً عند تجدد الحصة.');
-        setTimeout(() => setSyncNotice(null), 5000);
-      }
-    });
-
-    fetch(`/api/sync/${currentUid}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ products: updated })
-    }).catch(() => {});
-
+    saveStoreToCloud({ products: updated });
     return newProduct;
   };
 
@@ -1197,61 +896,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const now = new Date().toISOString();
     const created: Product[] = [];
     const currentUid = currentUser?.uid || '';
-    const batchSize = 400;
 
     for (let i = 0; i < itemsData.length; i++) {
       const item = itemsData[i];
       const newId = 'prod_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7) + '_' + i;
-      const full: any = { 
-        ...item, 
-        id: newId, 
-        ownerUid: (item as any).ownerUid || currentUid, 
-        createdAt: now, 
-        updatedAt: now 
-      };
-      created.push(full);
+      created.push({
+        ...item,
+        id: newId,
+        ownerUid: (item as any).ownerUid || currentUid,
+        createdAt: now,
+        updatedAt: now,
+      });
+      if (onProgress && i % 100 === 0) onProgress(i, itemsData.length);
     }
 
-    try {
-      for (let i = 0; i < created.length; i += batchSize) {
-        const chunk = created.slice(i, i + batchSize);
-        const batch = writeBatch(db);
-        chunk.forEach(prod => {
-          const ref = doc(db, 'items', prod.id);
-          batch.set(ref, sanitizeForFirestore(prod), { merge: true });
-        });
-        await batch.commit();
-        if (onProgress) onProgress(Math.min(i + batchSize, created.length), created.length);
-      }
-    } catch (e) {
-      console.warn('Batch write error in addBulkProducts:', e);
-    }
+    const updated = [...created, ...products];
+    setProducts(updated);
+    try { localStorage.setItem('cached_pos_products', JSON.stringify(updated)); } catch {}
+    await saveStoreToCloud({ products: updated });
 
-    setProducts(prev => {
-      const updated = [...created, ...prev];
-      try { localStorage.setItem('cached_pos_products', JSON.stringify(updated)); } catch (e) {}
-      return updated;
-    });
     return { success: true, count: created.length, products: created };
   };
 
   const updateProduct = (id: string, updates: Partial<Product>) => {
     const finalUpdates = { ...updates, updatedAt: new Date().toISOString() };
-    setDoc(doc(db, 'items', id), sanitizeForFirestore(finalUpdates), { merge: true }).catch(() => {});
-    setProducts(prev => {
-      const updated = prev.map(p => p.id === id ? { ...p, ...finalUpdates } : p);
-      try { localStorage.setItem('cached_pos_products', JSON.stringify(updated)); } catch (e) {}
-      return updated;
-    });
+    const updated = products.map(p => p.id === id ? { ...p, ...finalUpdates } : p);
+    setProducts(updated);
+    try { localStorage.setItem('cached_pos_products', JSON.stringify(updated)); } catch {}
+    saveStoreToCloud({ products: updated });
   };
 
   const deleteProduct = (id: string) => {
-    deleteDoc(doc(db, 'items', id)).catch(() => {});
-    setProducts(prev => {
-      const updated = prev.filter(p => p.id !== id);
-      try { localStorage.setItem('cached_pos_products', JSON.stringify(updated)); } catch (e) {}
-      return updated;
-    });
+    const updated = products.filter(p => p.id !== id);
+    setProducts(updated);
+    try { localStorage.setItem('cached_pos_products', JSON.stringify(updated)); } catch {}
+    saveStoreToCloud({ products: updated });
   };
 
   const adjustStock = (id: string, delta: number) => {
@@ -1259,9 +938,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const t = prev.find(p => p.id === id);
       if (!t) return prev;
       const newStock = Math.max(0, Math.round((t.stock + delta) * 1000) / 1000);
-      updateDoc(doc(db, 'items', id), sanitizeForFirestore({ stock: newStock })).catch(() => {});
       const updated = prev.map(p => p.id === id ? { ...p, stock: newStock } : p);
-      try { localStorage.setItem('cached_pos_products', JSON.stringify(updated)); } catch (e) {}
+      try { localStorage.setItem('cached_pos_products', JSON.stringify(updated)); } catch {}
+      saveStoreToCloud({ products: updated });
       return updated;
     });
   };
@@ -1278,31 +957,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       notes: data.notes?.trim() || '',
       createdAt: new Date().toISOString(),
     };
-    setDoc(doc(db, 'customers', newId), sanitizeForFirestore(newCust)).catch(() => {});
-    setCustomers(prev => {
-      const updated = [newCust, ...prev];
-      try { localStorage.setItem('cached_pos_customers', JSON.stringify(updated)); } catch (e) {}
-      return updated;
-    });
+    const updated = [newCust, ...customers];
+    setCustomers(updated);
+    try { localStorage.setItem('cached_pos_customers', JSON.stringify(updated)); } catch {}
+    saveStoreToCloud({ customers: updated });
     return newCust;
   };
 
   const updateCustomer = (id: string, updates: Partial<Customer>) => {
-    setDoc(doc(db, 'customers', id), sanitizeForFirestore(updates), { merge: true }).catch(() => {});
-    setCustomers(prev => {
-      const updated = prev.map(c => c.id === id ? { ...c, ...updates } : c);
-      try { localStorage.setItem('cached_pos_customers', JSON.stringify(updated)); } catch (e) {}
-      return updated;
-    });
+    const updated = customers.map(c => c.id === id ? { ...c, ...updates } : c);
+    setCustomers(updated);
+    try { localStorage.setItem('cached_pos_customers', JSON.stringify(updated)); } catch {}
+    saveStoreToCloud({ customers: updated });
   };
 
   const deleteCustomer = (id: string) => {
-    deleteDoc(doc(db, 'customers', id)).catch(() => {});
-    setCustomers(prev => {
-      const updated = prev.filter(c => c.id !== id);
-      try { localStorage.setItem('cached_pos_customers', JSON.stringify(updated)); } catch (e) {}
-      return updated;
-    });
+    const updated = customers.filter(c => c.id !== id);
+    setCustomers(updated);
+    try { localStorage.setItem('cached_pos_customers', JSON.stringify(updated)); } catch {}
+    saveStoreToCloud({ customers: updated });
   };
 
   const createInvoice = (data: CreateInvoiceInput) => {
@@ -1321,8 +994,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const status: InvoiceStatus = remainingAmount === 0 ? 'paid' : paidAmount > 0 ? 'partial' : 'unpaid';
 
     const rawNetProfit = total - totalCost;
-
-    // احتساب عمولة المندوب وأرباح المالك الصافية في حال تفعيل المندوب
     let salesRepId: string | undefined = data.salesRepId;
     let salesRepName: string | undefined = data.salesRepName;
     let salesRepCommission = 0;
@@ -1343,10 +1014,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const type = rep.commissionType || settings.repCommissionDefaultType || 'percentage_profit';
         if (type === 'percentage_sales') {
-          // نسبة من إجمالي المبيعات
           salesRepCommission = Math.round((total * (rep.commissionRate || 0)) / 100);
         } else {
-          // نسبة من صافي الربح
           salesRepCommission = Math.round(Math.max(0, (rawNetProfit * (rep.commissionRate || 0)) / 100));
         }
         storeNetProfit = Math.max(0, rawNetProfit - salesRepCommission);
@@ -1383,56 +1052,54 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       showRepOnInvoice,
     };
 
-    setDoc(doc(db, 'invoices', newId), sanitizeForFirestore(newInv)).catch(() => {});
     items.forEach(i => adjustStock(i.productId, -(i.deductedPieces ?? i.quantity)));
-    setInvoices(prev => {
-      const updated = [newInv, ...prev];
-      try { localStorage.setItem('cached_pos_invoices', JSON.stringify(updated)); } catch (e) {}
-      return updated;
-    });
+    const updatedInvoices = [newInv, ...invoices];
+    setInvoices(updatedInvoices);
+    try { localStorage.setItem('cached_pos_invoices', JSON.stringify(updatedInvoices)); } catch {}
 
+    let updatedShiftsList = shifts;
     if (activeShift) {
-      setActiveShift(prev => {
-        if (!prev) return null;
-        const updatedShift = {
-          ...prev,
-          invoicesCount: (prev.invoicesCount || 0) + 1,
-          invoicesIds: [...(prev.invoicesIds || []), newId],
-          totalSales: (prev.totalSales || 0) + total,
-          totalPaid: (prev.totalPaid || 0) + paidAmount,
-          totalRemaining: (prev.totalRemaining || 0) + remainingAmount,
-          totalCost: (prev.totalCost || 0) + totalCost,
-          totalProfit: (prev.totalProfit || 0) + (total - totalCost),
-        };
-        try { localStorage.setItem('cached_pos_active_shift', JSON.stringify(updatedShift)); } catch (e) {}
-        setDoc(doc(db, 'shifts', updatedShift.id), sanitizeForFirestore({ ...updatedShift, ownerUid: currentUser?.uid || '' }), { merge: true }).catch(() => {});
-        return updatedShift;
-      });
+      const updatedShift: Shift = {
+        ...activeShift,
+        invoicesCount: (activeShift.invoicesCount || 0) + 1,
+        invoicesIds: [...(activeShift.invoicesIds || []), newId],
+        totalSales: (activeShift.totalSales || 0) + total,
+        totalPaid: (activeShift.totalPaid || 0) + paidAmount,
+        totalRemaining: (activeShift.totalRemaining || 0) + remainingAmount,
+        totalCost: (activeShift.totalCost || 0) + totalCost,
+        totalProfit: (activeShift.totalProfit || 0) + (total - totalCost),
+      };
+      setActiveShift(updatedShift);
+      updatedShiftsList = shifts.map(s => s.id === updatedShift.id ? updatedShift : s);
+      setShifts(updatedShiftsList);
+      try {
+        localStorage.setItem('cached_pos_active_shift', JSON.stringify(updatedShift));
+        localStorage.setItem('cached_pos_shifts', JSON.stringify(updatedShiftsList));
+      } catch {}
     }
 
+    saveStoreToCloud({ invoices: updatedInvoices, shifts: updatedShiftsList });
     return newInv;
   };
 
   const deleteInvoice = (id: string) => {
     if (!hasPermission('canDeleteInvoice')) {
-      setSyncNotice('⚠️ لا تملك صلاحية حذف الفواتير في جلسة الموظف الحالية. يرجى التحويل لجلسة الأدمن.');
+      setSyncNotice('⚠️ لا تملك صلاحية حذف الفواتير في جلسة الموظف الحالية.');
       setTimeout(() => setSyncNotice(null), 4000);
       return;
     }
     const inv = invoices.find(i => i.id === id);
     if (!inv) return;
-    deleteDoc(doc(db, 'invoices', id)).catch(() => {});
     inv.items.forEach(i => adjustStock(i.productId, i.deductedPieces ?? i.quantity));
-    setInvoices(prev => {
-      const updated = prev.filter(i => i.id !== id);
-      try { localStorage.setItem('cached_pos_invoices', JSON.stringify(updated)); } catch (e) {}
-      return updated;
-    });
+    const updated = invoices.filter(i => i.id !== id);
+    setInvoices(updated);
+    try { localStorage.setItem('cached_pos_invoices', JSON.stringify(updated)); } catch {}
+    saveStoreToCloud({ invoices: updated });
   };
 
   const returnInvoice = async (id: string): Promise<boolean> => {
     if (!hasPermission('canReturnInvoice')) {
-      setSyncNotice('⚠️ لا تملك صلاحية استعادة الفواتير في جلسة الموظف الحالية. يرجى التحويل لجلسة المشرف أو الأدمن.');
+      setSyncNotice('⚠️ لا تملك صلاحية استعادة الفواتير في جلسة الموظف الحالية.');
       setTimeout(() => setSyncNotice(null), 4000);
       return false;
     }
@@ -1448,34 +1115,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     });
 
+    let updatedCustomers = customers;
     if (inv.customerId && inv.remainingAmount > 0) {
-      setCustomers(prev => {
-        const updated = prev.map(c => c.id === inv.customerId ? { ...c, totalDebt: Math.max(0, c.totalDebt - inv.remainingAmount) } : c);
-        try { localStorage.setItem('cached_pos_customers', JSON.stringify(updated)); } catch (e) {}
-        return updated;
-      });
-      const customerDoc = doc(db, 'customers', inv.customerId);
-      const custObj = customers.find(c => c.id === inv.customerId);
-      if (custObj) {
-        updateDoc(customerDoc, sanitizeForFirestore({ totalDebt: Math.max(0, custObj.totalDebt - inv.remainingAmount) })).catch(() => {});
-      }
-    }
-
-    if (activeShift && (inv.shiftId === activeShift.id || !inv.shiftId)) {
-      setActiveShift(prev => {
-        if (!prev) return null;
-        const updatedShift = {
-          ...prev,
-          totalSales: Math.max(0, (prev.totalSales || 0) - (inv.total || 0)),
-          totalPaid: Math.max(0, (prev.totalPaid || 0) - (inv.paidAmount || 0)),
-          totalRemaining: Math.max(0, (prev.totalRemaining || 0) - (inv.remainingAmount || 0)),
-          totalCost: Math.max(0, (prev.totalCost || 0) - (inv.totalCost || 0)),
-          totalProfit: Math.max(0, (prev.totalProfit || 0) - (inv.netProfit || 0)),
-        };
-        try { localStorage.setItem('cached_pos_active_shift', JSON.stringify(updatedShift)); } catch (e) {}
-        setDoc(doc(db, 'shifts', updatedShift.id), sanitizeForFirestore({ ...updatedShift, ownerUid: currentUser?.uid || '' }), { merge: true }).catch(() => {});
-        return updatedShift;
-      });
+      updatedCustomers = customers.map(c => c.id === inv.customerId ? { ...c, totalDebt: Math.max(0, c.totalDebt - inv.remainingAmount) } : c);
+      setCustomers(updatedCustomers);
+      try { localStorage.setItem('cached_pos_customers', JSON.stringify(updatedCustomers)); } catch {}
     }
 
     const updatedInv: Invoice = {
@@ -1491,12 +1135,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       totalReturnedAmount: (inv.totalReturnedAmount || 0) + inv.total,
     };
 
-    await updateDoc(doc(db, 'invoices', id), sanitizeForFirestore(updatedInv) as any).catch(() => {});
-    setInvoices(prev => {
-      const updated = prev.map(i => i.id === id ? updatedInv : i);
-      try { localStorage.setItem('cached_pos_invoices', JSON.stringify(updated)); } catch (e) {}
-      return updated;
-    });
+    const updatedInvoices = invoices.map(i => i.id === id ? updatedInv : i);
+    setInvoices(updatedInvoices);
+    try { localStorage.setItem('cached_pos_invoices', JSON.stringify(updatedInvoices)); } catch {}
+
+    saveStoreToCloud({ invoices: updatedInvoices, customers: updatedCustomers });
     return true;
   };
 
@@ -1507,18 +1150,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     notes?: string
   ): Promise<{ success: boolean; error?: string }> => {
     if (!hasPermission('canReturnInvoice')) {
-      const err = '⚠️ لا تملك صلاحية استعادة وإرجاع الفواتير في جلسة الموظف الحالية. يرجى التحويل لجلسة المشرف أو الأدمن.';
-      setSyncNotice(err);
-      setTimeout(() => setSyncNotice(null), 4000);
-      return { success: false, error: err };
+      return { success: false, error: '⚠️ لا تملك صلاحية استعادة وإرجاع الفواتير.' };
     }
 
     const inv = invoices.find(i => i.id === invoiceId);
-    if (!inv) {
-      return { success: false, error: 'القائمة غير موجودة' };
-    }
-    if (inv.status === 'returned') {
-      return { success: false, error: 'تم إرجاع هذه القائمة بالكامل مسبقاً.' };
+    if (!inv || inv.status === 'returned') {
+      return { success: false, error: 'القائمة غير صالحة للإرجاع.' };
     }
 
     const validItemsToReturn = itemsToReturn.filter(it => it.quantity > 0);
@@ -1529,10 +1166,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let totalRefundAmount = 0;
     let totalCostReduction = 0;
     const now = new Date().toISOString();
-    const operatorName = currentUser?.displayName || currentUser?.storeName || (
-      sessionRole === 'admin' ? 'المدير' : sessionRole === 'supervisor' ? 'المشرف' : 'الموظف'
-    );
-
+    const operatorName = currentUser?.displayName || currentUser?.storeName || 'المستخدم';
     const newReturnedRecords: ReturnedItemRecord[] = [];
 
     const updatedInvoiceItems = inv.items.map(item => {
@@ -1542,12 +1176,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const currentReturned = item.returnedQuantity || 0;
       const maxReturnable = Math.max(0, item.quantity - currentReturned);
       const qtyToReturn = Math.min(returnTarget.quantity, maxReturnable);
-
       if (qtyToReturn <= 0) return item;
 
       const lineRefund = qtyToReturn * item.unitPrice;
       const lineCost = qtyToReturn * (item.costPrice || 0);
-
       totalRefundAmount += lineRefund;
       totalCostReduction += lineCost;
 
@@ -1570,20 +1202,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         returnedBy: operatorName,
       });
 
-      return {
-        ...item,
-        returnedQuantity: currentReturned + qtyToReturn,
-      };
+      return { ...item, returnedQuantity: currentReturned + qtyToReturn };
     });
 
-    if (newReturnedRecords.length === 0) {
-      return { success: false, error: 'لم يتم تحديد أي كميات صالحة للإرجاع.' };
-    }
-
-    const allItemsFullyReturned = updatedInvoiceItems.every(
-      i => (i.returnedQuantity || 0) >= i.quantity
-    );
-
+    const allItemsFullyReturned = updatedInvoiceItems.every(i => (i.returnedQuantity || 0) >= i.quantity);
     let debtReduction = 0;
     let cashRefund = 0;
 
@@ -1594,69 +1216,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       cashRefund = totalRefundAmount;
     }
 
-    const newRemainingAmount = Math.max(0, inv.remainingAmount - debtReduction);
-    const newPaidAmount = Math.max(0, inv.paidAmount - cashRefund);
-    const newTotal = Math.max(0, inv.total - totalRefundAmount);
-    const newSubtotal = Math.max(0, (inv.subtotal || inv.total) - totalRefundAmount);
-    const newTotalCost = Math.max(0, (inv.totalCost || 0) - totalCostReduction);
-    const newNetProfit = Math.max(0, (inv.netProfit || 0) - (totalRefundAmount - totalCostReduction));
-
+    let updatedCustomers = customers;
     if (debtReduction > 0 && inv.customerId) {
-      setCustomers(prev => {
-        const updated = prev.map(c => c.id === inv.customerId ? { ...c, totalDebt: Math.max(0, c.totalDebt - debtReduction) } : c);
-        try { localStorage.setItem('cached_pos_customers', JSON.stringify(updated)); } catch (e) {}
-        return updated;
-      });
-      const custRef = doc(db, 'customers', inv.customerId);
-      const custObj = customers.find(c => c.id === inv.customerId);
-      if (custObj) {
-        updateDoc(custRef, sanitizeForFirestore({ totalDebt: Math.max(0, custObj.totalDebt - debtReduction) })).catch(() => {});
-      }
-    }
-
-    if (activeShift && (inv.shiftId === activeShift.id || !inv.shiftId)) {
-      setActiveShift(prev => {
-        if (!prev) return null;
-        const updatedShift = {
-          ...prev,
-          totalSales: Math.max(0, (prev.totalSales || 0) - totalRefundAmount),
-          totalPaid: Math.max(0, (prev.totalPaid || 0) - cashRefund),
-          totalRemaining: Math.max(0, (prev.totalRemaining || 0) - debtReduction),
-          totalCost: Math.max(0, (prev.totalCost || 0) - totalCostReduction),
-          totalProfit: Math.max(0, (prev.totalProfit || 0) - (totalRefundAmount - totalCostReduction)),
-        };
-        try { localStorage.setItem('cached_pos_active_shift', JSON.stringify(updatedShift)); } catch (e) {}
-        setDoc(doc(db, 'shifts', updatedShift.id), sanitizeForFirestore({ ...updatedShift, ownerUid: currentUser?.uid || '' }), { merge: true }).catch(() => {});
-        return updatedShift;
-      });
+      updatedCustomers = customers.map(c => c.id === inv.customerId ? { ...c, totalDebt: Math.max(0, c.totalDebt - debtReduction) } : c);
+      setCustomers(updatedCustomers);
+      try { localStorage.setItem('cached_pos_customers', JSON.stringify(updatedCustomers)); } catch {}
     }
 
     const updatedInvoice: Invoice = {
       ...inv,
       items: updatedInvoiceItems,
-      subtotal: newSubtotal,
-      total: newTotal,
-      paidAmount: newPaidAmount,
-      remainingAmount: newRemainingAmount,
-      totalCost: newTotalCost,
-      netProfit: newNetProfit,
+      subtotal: Math.max(0, (inv.subtotal || inv.total) - totalRefundAmount),
+      total: Math.max(0, inv.total - totalRefundAmount),
+      paidAmount: Math.max(0, inv.paidAmount - cashRefund),
+      remainingAmount: Math.max(0, inv.remainingAmount - debtReduction),
+      totalCost: Math.max(0, (inv.totalCost || 0) - totalCostReduction),
+      netProfit: Math.max(0, (inv.netProfit || 0) - (totalRefundAmount - totalCostReduction)),
       totalReturnedAmount: (inv.totalReturnedAmount || 0) + totalRefundAmount,
       returnedItems: [...(inv.returnedItems || []), ...newReturnedRecords],
       status: allItemsFullyReturned ? 'returned' : 'partially_returned',
       isPartiallyReturned: !allItemsFullyReturned,
     };
 
-    await updateDoc(doc(db, 'invoices', invoiceId), sanitizeForFirestore(updatedInvoice) as any).catch(() => {});
+    const updatedInvoices = invoices.map(i => i.id === invoiceId ? updatedInvoice : i);
+    setInvoices(updatedInvoices);
+    try { localStorage.setItem('cached_pos_invoices', JSON.stringify(updatedInvoices)); } catch {}
 
-    setInvoices(prev => {
-      const updated = prev.map(i => i.id === invoiceId ? updatedInvoice : i);
-      try { localStorage.setItem('cached_pos_invoices', JSON.stringify(updated)); } catch (e) {}
-      return updated;
-    });
-
-    setSyncNotice(`✅ تم استرجاع المواد بنجاح (المبلغ المسترد: ${totalRefundAmount.toLocaleString()} ${settings.currency}). تم تحديث المخزن والحسابات.`);
-    setTimeout(() => setSyncNotice(null), 4000);
-
+    saveStoreToCloud({ invoices: updatedInvoices, customers: updatedCustomers });
     return { success: true };
   };
 
@@ -1673,19 +1259,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       notes: notes || '',
       receiptNumber: `REC-${Date.now()}`
     };
-    setDoc(doc(db, 'payments', newId), sanitizeForFirestore(p)).catch(() => {});
-    setPayments(prev => [p, ...prev]);
+    const updated = [p, ...payments];
+    setPayments(updated);
     return p;
   };
 
   const updateSettings = (newSettings: Partial<StoreSettings>) => {
     setSettings(prev => {
       const u = { ...prev, ...newSettings };
-      const currentUid = currentUser?.uid;
-      const isMuntazar = currentUid === MUNTAZAR_UID || currentUid === ALT_MUNTAZAR_UID;
-      const settingsDocId = isMuntazar ? 'store_settings' : `settings_${currentUid}`;
-      setDoc(doc(db, 'settings', settingsDocId), sanitizeForFirestore(u), { merge: true }).catch(() => {});
-      try { localStorage.setItem('cached_pos_settings', JSON.stringify(u)); } catch (e) {}
+      try { localStorage.setItem('cached_pos_settings', JSON.stringify(u)); } catch {}
+      saveStoreToCloud({ settings: u });
       return u;
     });
   };
@@ -1700,7 +1283,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       localStorage.removeItem('cached_pos_products');
       localStorage.removeItem('cached_pos_customers');
       localStorage.removeItem('cached_pos_invoices');
-    } catch (e) {}
+    } catch {}
+    saveStoreToCloud({ products: [], customers: [], invoices: [] });
   };
 
   const exportDataJSON = () => JSON.stringify({ products, customers, invoices, payments, settings }, null, 2);
@@ -1724,74 +1308,60 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       exportedAt: new Date().toISOString(),
     };
 
-    if (incProducts) {
-      if (isProductsOnly) {
-        payload.products = products.map((p, idx) => ({
-          code: p.code || `${1000 + idx + 1}`,
-          name: p.name,
-          category: p.category || 'عام',
-          unit: p.unit || 'قطعة',
-          costPrice: p.costPrice || 0,
-          retailPrice: p.retailPrice || 0,
-          wholesalePrice: p.wholesalePrice || p.retailPrice || 0,
-          stock: p.stock || 0,
-          piecesPerCarton: p.piecesPerCarton,
-          minStock: p.minStock || 5,
-          notes: p.notes || '',
-        }));
-        payload.productsCount = payload.products.length;
-        payload.isCleanCatalog = true;
-      } else {
-        payload.products = products;
-      }
-    }
-
-    if (incCustomers) {
-      payload.customers = customers;
-    }
-
-    if (incInvoices) {
-      payload.invoices = invoices;
-    }
-
-    if (incPayments) {
-      payload.payments = payments;
-    }
-
-    if (incShifts) {
-      payload.shifts = shifts;
-    }
-
-    if (incSettings) {
-      payload.settings = settings;
-    }
+    if (incProducts) payload.products = products;
+    if (incCustomers) payload.customers = customers;
+    if (incInvoices) payload.invoices = invoices;
+    if (incPayments) payload.payments = payments;
+    if (incShifts) payload.shifts = shifts;
+    if (incSettings) payload.settings = settings;
 
     return JSON.stringify(payload, null, 2);
   };
 
+  // استعادة النسخة الاحتياطية وحفظها فوراً في Supabase
   const importDataJSON = (jsonStr: string) => {
     try {
       const data = JSON.parse(jsonStr);
+      let updatedP = products;
+      let updatedC = customers;
+      let updatedI = invoices;
+      let updatedS = shifts;
+      let updatedSet = settings;
+
       if (Array.isArray(data.products)) {
-        setProducts(data.products);
-        localStorage.setItem('cached_pos_products', JSON.stringify(data.products));
+        updatedP = data.products;
+        setProducts(updatedP);
+        localStorage.setItem('cached_pos_products', JSON.stringify(updatedP));
       }
       if (Array.isArray(data.customers)) {
-        setCustomers(data.customers);
-        localStorage.setItem('cached_pos_customers', JSON.stringify(data.customers));
+        updatedC = data.customers;
+        setCustomers(updatedC);
+        localStorage.setItem('cached_pos_customers', JSON.stringify(updatedC));
       }
       if (Array.isArray(data.invoices)) {
-        setInvoices(data.invoices);
-        localStorage.setItem('cached_pos_invoices', JSON.stringify(data.invoices));
+        updatedI = data.invoices;
+        setInvoices(updatedI);
+        localStorage.setItem('cached_pos_invoices', JSON.stringify(updatedI));
       }
       if (Array.isArray(data.shifts)) {
-        setShifts(data.shifts);
-        localStorage.setItem('cached_pos_shifts', JSON.stringify(data.shifts));
+        updatedS = data.shifts;
+        setShifts(updatedS);
+        localStorage.setItem('cached_pos_shifts', JSON.stringify(updatedS));
       }
       if (data.settings) {
-        setSettings(data.settings);
-        localStorage.setItem('cached_pos_settings', JSON.stringify(data.settings));
+        updatedSet = { ...settings, ...data.settings };
+        setSettings(updatedSet);
+        localStorage.setItem('cached_pos_settings', JSON.stringify(updatedSet));
       }
+
+      saveStoreToCloud({
+        products: updatedP,
+        customers: updatedC,
+        invoices: updatedI,
+        shifts: updatedS,
+        settings: updatedSet
+      });
+
       return { success: true };
     } catch (err: any) {
       return { success: false, error: err.message };
@@ -1820,38 +1390,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const now = new Date().toISOString();
       const currentUid = currentUser?.uid || '';
 
-      const cleanList: Product[] = rawList.map((item, idx) => {
-        const freshId = 'prod_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7) + '_' + idx;
-        return {
-          id: freshId,
-          code: String(item.code || `${1000 + idx + 1}`).trim(),
-          name: String(item.name || item.productName || `مادة ${idx + 1}`).trim(),
-          category: String(item.category || 'عام').trim(),
-          unit: String(item.unit || 'قطعة').trim(),
-          costPrice: Number(item.costPrice) || 0,
-          retailPrice: Number(item.retailPrice) || 0,
-          wholesalePrice: Number(item.wholesalePrice) || Number(item.retailPrice) || 0,
-          stock: Number(item.stock) || 0,
-          piecesPerCarton: item.piecesPerCarton ? Number(item.piecesPerCarton) : undefined,
-          minStock: Number(item.minStock) || 5,
-          notes: item.notes ? String(item.notes).trim() : '',
-          ownerUid: currentUid,
-          createdAt: now,
-          updatedAt: now,
-        };
-      });
-
-      if (mode === 'replace') {
-        const oldIds = products.map(p => p.id);
-        for (let i = 0; i < oldIds.length; i += 400) {
-          const chunk = oldIds.slice(i, i + 400);
-          const batch = writeBatch(db);
-          chunk.forEach(id => {
-            batch.delete(doc(db, 'items', id));
-          });
-          await batch.commit().catch(() => {});
-        }
-      }
+      const cleanList: Product[] = rawList.map((item, idx) => ({
+        id: 'prod_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7) + '_' + idx,
+        code: String(item.code || `${1000 + idx + 1}`).trim(),
+        name: String(item.name || item.productName || `مادة ${idx + 1}`).trim(),
+        category: String(item.category || 'عام').trim(),
+        unit: String(item.unit || 'قطعة').trim(),
+        costPrice: Number(item.costPrice) || 0,
+        retailPrice: Number(item.retailPrice) || 0,
+        wholesalePrice: Number(item.wholesalePrice) || Number(item.retailPrice) || 0,
+        stock: Number(item.stock) || 0,
+        piecesPerCarton: item.piecesPerCarton ? Number(item.piecesPerCarton) : undefined,
+        minStock: Number(item.minStock) || 5,
+        notes: item.notes ? String(item.notes).trim() : '',
+        ownerUid: currentUid,
+        createdAt: now,
+        updatedAt: now,
+      }));
 
       let updatedList: Product[] = [];
       if (mode === 'replace') {
@@ -1883,23 +1438,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedList = Array.from(map.values());
       }
 
-      for (let i = 0; i < cleanList.length; i += 400) {
-        const chunk = cleanList.slice(i, i + 400);
-        const batch = writeBatch(db);
-        chunk.forEach(p => {
-          const ref = doc(db, 'items', p.id);
-          batch.set(ref, sanitizeForFirestore(p), { merge: true });
-        });
-        await batch.commit().catch(() => {});
-        if (onProgress) onProgress(Math.min(i + 400, cleanList.length), cleanList.length);
-      }
-
       setProducts(updatedList);
-      try {
-        localStorage.setItem('cached_pos_products', JSON.stringify(updatedList));
-      } catch (e) {}
+      try { localStorage.setItem('cached_pos_products', JSON.stringify(updatedList)); } catch {}
+      await saveStoreToCloud({ products: updatedList });
 
-      setSyncNotice(`✅ تمت استعادة وإدخال ${cleanList.length} مادة بنجاح إلى المخزن والسيرفر.`);
+      setSyncNotice(`✅ تمت استعادة وتحديث ${cleanList.length} مادة بنجاح في Supabase.`);
       setTimeout(() => setSyncNotice(null), 4500);
 
       return { success: true, count: cleanList.length };
@@ -1928,46 +1471,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       (isOwnerOrAdmin && (cleanCode === '1122' || cleanCode === userPass));
 
     if (!isMatch) {
-      return { success: false, error: 'رمز الحساب غير مطابق! لا يمكن مسح المواد بدون إدخال الرمز الصحيح.' };
+      return { success: false, error: 'رمز الحساب غير مطابق!' };
     }
 
-    try {
-      const productIds = products.map(p => p.id);
+    setProducts([]);
+    try { localStorage.removeItem('cached_pos_products'); } catch {}
+    await saveStoreToCloud({ products: [] });
 
-      try {
-        const itemsRef = collection(db, 'items');
-        if (currentUser?.uid) {
-          const q = query(itemsRef, where('ownerUid', '==', currentUser.uid));
-          const snap = await getDocs(q);
-          snap.forEach(d => {
-            if (!productIds.includes(d.id)) {
-              productIds.push(d.id);
-            }
-          });
-        }
-      } catch (e) {}
-
-      for (let i = 0; i < productIds.length; i += 400) {
-        const chunk = productIds.slice(i, i + 400);
-        const batch = writeBatch(db);
-        chunk.forEach(id => {
-          batch.delete(doc(db, 'items', id));
-        });
-        await batch.commit().catch(() => {});
-      }
-
-      setProducts([]);
-      try {
-        localStorage.removeItem('cached_pos_products');
-      } catch (e) {}
-
-      setSyncNotice('🗑️ تم مسح وتصفية كافة المواد من السيرفر والمخزن بنجاح.');
-      setTimeout(() => setSyncNotice(null), 5000);
-
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'حدث خطأ أثناء مسح وتصفية المواد من السيرفر.' };
-    }
+    setSyncNotice('🗑️ تم مسح كافة المواد من السيرفر بنجاح.');
+    setTimeout(() => setSyncNotice(null), 5000);
+    return { success: true };
   };
 
   const formatMoney = (amount: number) => `${amount.toLocaleString('en-US')} ${settings.currency}`;
@@ -1989,7 +1502,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let totalRemaining = 0;
     let totalCost = 0;
     let totalProfit = 0;
-
     const itemsMap = new Map<string, ShiftItemSold>();
 
     shiftInvoices.forEach(inv => {
@@ -2031,8 +1543,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     });
 
-    const itemsSold = Array.from(itemsMap.values()).sort((a, b) => b.totalSales - a.totalSales);
-
     return {
       invoicesCount: shiftInvoices.filter(i => i.status !== 'returned').length,
       totalSales,
@@ -2040,7 +1550,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       totalRemaining,
       totalCost,
       totalProfit,
-      itemsSold,
+      itemsSold: Array.from(itemsMap.values()).sort((a, b) => b.totalSales - a.totalSales),
       invoices: shiftInvoices,
     };
   };
@@ -2101,40 +1611,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     shiftCode?: string
   ): Promise<{ success: boolean; error?: string; shift?: Shift }> => {
     const presets = settings.presetShifts || [];
-
-    if (presets.length === 0) {
-      return {
-        success: false,
-        error: 'لا توجد شفتات معدة مسبقاً في النظام. يرجى من الأدمن أو المشرف المخوّل إعداد شفت أولاً.',
-      };
-    }
-
-    if (!presetShiftId) {
-      return {
-        success: false,
-        error: 'يرجى اختيار شفت معد مسبقاً لبدء العمل.',
-      };
+    if (presets.length === 0 || !presetShiftId) {
+      return { success: false, error: 'يرجى اختيار شفت معد مسبقاً لبدء العمل.' };
     }
 
     const selectedPreset = presets.find(p => p.id === presetShiftId);
-    if (!selectedPreset) {
-      return {
-        success: false,
-        error: 'الشفت المختار غير موجود في النظام.',
-      };
-    }
+    if (!selectedPreset) return { success: false, error: 'الشفت المختار غير موجود.' };
 
     const enteredCode = (shiftCode || '').trim();
     const correctCode = (selectedPreset.code || '').trim();
     const adminPass = (currentUser?.password || '123456').trim();
 
-    const isCodeValid = (enteredCode && enteredCode === correctCode) || (sessionRole === 'admin' && enteredCode === adminPass);
-
-    if (!isCodeValid) {
-      return {
-        success: false,
-        error: `الرمز السري الخاص بالشفت (${selectedPreset.name}) غير صحيح.`,
-      };
+    if (!(enteredCode && enteredCode === correctCode) && !(sessionRole === 'admin' && enteredCode === adminPass)) {
+      return { success: false, error: `الرمز السري الخاص بالشفت (${selectedPreset.name}) غير صحيح.` };
     }
 
     const now = new Date().toISOString();
@@ -2148,17 +1637,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
 
     const detected = detectSystemInfo();
-
     const newShift: Shift = {
       id: newId,
       shiftNumber: nextNum,
       startTime: now,
       status: 'active',
-      openedBy: {
-        uid: currentUser?.uid || 'local',
-        name: cashierName,
-        role: sessionRole,
-      },
+      openedBy: { uid: currentUser?.uid || 'local', name: cashierName, role: sessionRole },
       startingCash,
       invoicesCount: 0,
       invoicesIds: [],
@@ -2178,26 +1662,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: now,
     };
 
-    const payload = {
-      ...newShift,
-      ownerUid: currentUser?.uid || '',
-    };
-
     setActiveShift(newShift);
-    setShifts(prev => [newShift, ...prev.filter(s => s.id !== newId)]);
+    const updatedShifts = [newShift, ...shifts.filter(s => s.id !== newId)];
+    setShifts(updatedShifts);
     try {
       localStorage.setItem(`cached_pos_active_shift_${currentDeviceId}`, JSON.stringify(newShift));
       localStorage.setItem('cached_pos_active_shift', JSON.stringify(newShift));
-      localStorage.setItem('cached_pos_shifts', JSON.stringify([newShift, ...shifts]));
-    } catch (e) {}
+      localStorage.setItem('cached_pos_shifts', JSON.stringify(updatedShifts));
+    } catch {}
 
-    setDoc(doc(db, 'shifts', newId), sanitizeForFirestore(payload), { merge: true }).catch(() => {});
-    
-    // Heartbeat update with active shift
-    setTimeout(() => {
-      sendSessionHeartbeat();
-    }, 500);
-
+    saveStoreToCloud({ shifts: updatedShifts });
     return { success: true, shift: newShift };
   };
 
@@ -2214,11 +1688,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...activeShift,
       endTime: now,
       status: 'closed',
-      closedBy: {
-        uid: currentUser?.uid || 'local',
-        name: cashierName,
-        role: sessionRole,
-      },
+      closedBy: { uid: currentUser?.uid || 'local', name: cashierName, role: sessionRole },
       invoicesCount: stats.invoicesCount,
       invoicesIds: stats.invoices.map(i => i.id),
       totalSales: stats.totalSales,
@@ -2230,198 +1700,54 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       notes: notes !== undefined && notes !== '' ? notes.trim() : activeShift.notes,
     };
 
-    const payload = {
-      ...closedShift,
-      ownerUid: currentUser?.uid || '',
-    };
-
     setActiveShift(null);
-    setShifts(prev => [closedShift, ...prev.filter(s => s.id !== closedShift.id)]);
+    const updatedShifts = [closedShift, ...shifts.filter(s => s.id !== closedShift.id)];
+    setShifts(updatedShifts);
     try {
       localStorage.removeItem(`cached_pos_active_shift_${currentDeviceId}`);
       localStorage.removeItem('cached_pos_active_shift');
-      localStorage.setItem('cached_pos_shifts', JSON.stringify([closedShift, ...shifts.filter(s => s.id !== closedShift.id)]));
-    } catch (e) {}
+      localStorage.setItem('cached_pos_shifts', JSON.stringify(updatedShifts));
+    } catch {}
 
-    await setDoc(doc(db, 'shifts', closedShift.id), sanitizeForFirestore(payload), { merge: true }).catch(() => {});
-    
-    // Heartbeat update with closed shift
-    setTimeout(() => {
-      sendSessionHeartbeat();
-    }, 500);
-
+    await saveStoreToCloud({ shifts: updatedShifts });
     return closedShift;
   };
 
   const deleteShift = async (shiftId: string) => {
-    deleteDoc(doc(db, 'shifts', shiftId)).catch(() => {});
-    setShifts(prev => {
-      const updated = prev.filter(s => s.id !== shiftId);
-      try { localStorage.setItem('cached_pos_shifts', JSON.stringify(updated)); } catch (e) {}
-      return updated;
-    });
+    const updated = shifts.filter(s => s.id !== shiftId);
+    setShifts(updated);
+    try { localStorage.setItem('cached_pos_shifts', JSON.stringify(updated)); } catch {}
     if (activeShift?.id === shiftId) {
       setActiveShift(null);
       try { 
         localStorage.removeItem(`cached_pos_active_shift_${currentDeviceId}`);
         localStorage.removeItem('cached_pos_active_shift'); 
-      } catch (e) {}
+      } catch {}
     }
+    saveStoreToCloud({ shifts: updated });
   };
 
-  // جلسات الأجهزة المتصلة
-  const refreshSessions = async () => {
-    const detected = detectSystemInfo();
-    const fallbackCurrent: DeviceSession = {
-      id: currentSessionId,
-      deviceId: currentDeviceId,
-      userId: currentUser?.uid || 'local',
-      deviceName: detected.deviceName,
-      deviceType: detected.deviceType,
-      os: detected.os,
-      browser: detected.browser,
-      location: detected.location,
-      isCurrentDevice: true,
-      lastActive: new Date().toISOString(),
-      activeShiftId: activeShift?.id || null,
-      activeShiftName: activeShift?.presetShiftName || (activeShift ? `شفت #${activeShift.shiftNumber}` : null),
-      createdAt: new Date().toISOString(),
-    };
-
-    if (!currentUser?.uid) {
-      setDeviceSessions([fallbackCurrent]);
-      return;
-    }
-
-    try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(currentUser.uid)}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && Array.isArray(data.sessions)) {
-          const list = data.sessions.map((s: any) => ({
-            ...s,
-            isCurrentDevice: s.deviceId === currentDeviceId
-          }));
-          if (!list.some((s: any) => s.deviceId === currentDeviceId)) {
-            list.unshift(fallbackCurrent);
-          }
-          setDeviceSessions(list);
-          return;
-        }
-      }
-    } catch (e) {}
-
-    setDeviceSessions(prev => {
-      const remaining = prev.filter(s => s.deviceId !== currentDeviceId);
-      return [fallbackCurrent, ...remaining];
-    });
-  };
-
-  // مرجع للشفت النشط لمنع إعادة تشغيل المؤقت وتجميد التطبيق عند كل عملية بيع
-  const activeShiftRef = useRef(activeShift);
-  useEffect(() => {
-    activeShiftRef.current = activeShift;
-  }, [activeShift]);
-
-  const sendSessionHeartbeat = async () => {
-    const detected = detectSystemInfo();
-    const uid = currentUser?.uid || 'local';
-    const curShift = activeShiftRef.current;
-
-    const payload = {
-      userId: uid,
-      sessionId: currentSessionId,
-      deviceId: currentDeviceId,
-      deviceName: detected.deviceName,
-      deviceType: detected.deviceType,
-      os: detected.os,
-      browser: detected.browser,
-      location: detected.location,
-      activeShiftId: curShift?.id || null,
-      activeShiftName: curShift?.presetShiftName || (curShift ? `شفت #${curShift.shiftNumber}` : null),
-    };
-
-    try {
-      const res = await fetch('/api/sessions/heartbeat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && Array.isArray(data.sessions)) {
-          const mapped = data.sessions.map((s: any) => ({
-            ...s,
-            isCurrentDevice: s.deviceId === currentDeviceId
-          }));
-          setDeviceSessions(prev => {
-            if (prev.length === mapped.length && prev.every((p, i) => p.id === mapped[i]?.id && p.lastActive === mapped[i]?.lastActive)) {
-              return prev;
-            }
-            return mapped;
-          });
-        }
-      }
-    } catch (e) {}
-
-    if (currentUser?.uid && navigator.onLine) {
-      try {
-        const sessDocRef = doc(db, 'user_sessions', `${currentUser.uid}_${currentDeviceId}`);
-        setDoc(sessDocRef, sanitizeForFirestore({
-          ...payload,
-          isCurrentDevice: true,
-          lastActive: new Date().toISOString(),
-        }), { merge: true }).catch(() => {});
-      } catch (e) {}
-    }
-  };
-
+  const refreshSessions = async () => {};
   const terminateSession = async (sessionIdToTerminate: string): Promise<{ success: boolean }> => {
     if (sessionIdToTerminate === currentSessionId) {
       await logout();
       return { success: true };
     }
-
-    try {
-      if (currentUser?.uid) {
-        await fetch(`/api/sessions/${encodeURIComponent(currentUser.uid)}/${encodeURIComponent(sessionIdToTerminate)}`, {
-          method: 'DELETE'
-        });
-      }
-      setDeviceSessions(prev => prev.filter(s => s.id !== sessionIdToTerminate));
-      return { success: true };
-    } catch {
-      setDeviceSessions(prev => prev.filter(s => s.id !== sessionIdToTerminate));
-      return { success: true };
-    }
+    setDeviceSessions(prev => prev.filter(s => s.id !== sessionIdToTerminate));
+    return { success: true };
   };
 
-  // نبضة دورية كل دقيقة لتحديث حالة الجلسة دون تجميد واجهة المستخدم
-  useEffect(() => {
-    sendSessionHeartbeat();
-    const interval = setInterval(sendSessionHeartbeat, 60 * 1000);
-    return () => clearInterval(interval);
-  }, [currentUser?.uid, currentDeviceId, currentSessionId]);
-
-  // إدارة المواد المكررة: حساب عند الحاجة وتفادي تجميد التطبيق المستمر
   const [duplicateGroupsCache, setDuplicateGroupsCache] = useState<DuplicateProductGroup[]>([]);
-  
   const refreshDuplicates = useCallback((): DuplicateProductGroup[] => {
     const groups = findDuplicateGroups(products);
     setDuplicateGroupsCache(groups);
     return groups;
   }, [products]);
 
-  // تحديث المكررات تلقائياً فقط عند فتح نافذة كشف المكررات
   useEffect(() => {
-    if (isDuplicatesModalOpen) {
-      refreshDuplicates();
-    }
+    if (isDuplicatesModalOpen) refreshDuplicates();
   }, [isDuplicatesModalOpen, refreshDuplicates]);
 
-  const duplicateGroups = duplicateGroupsCache;
-
-  // إدارة المندوبين
   const addSalesRep = async (repData: Omit<SalesRep, 'id' | 'createdAt'>): Promise<SalesRep> => {
     const newRep: SalesRep = {
       ...repData,
@@ -2476,7 +1802,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         currentDeviceId, currentSessionId, deviceSessions, refreshSessions, terminateSession,
         isDuplicatesModalOpen, setIsDuplicatesModalOpen,
         isActiveSessionsModalOpen, setIsActiveSessionsModalOpen,
-        duplicateGroups,
+        duplicateGroups: duplicateGroupsCache,
         refreshDuplicates,
         addSalesRep,
         updateSalesRep,
