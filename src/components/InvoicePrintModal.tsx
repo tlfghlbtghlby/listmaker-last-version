@@ -4,7 +4,6 @@ import { Invoice } from '../types';
 import { 
   X, 
   Printer, 
-  Share2, 
   Check, 
   FileText, 
   Receipt, 
@@ -198,88 +197,102 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
       }
     }
 
-    // 2. بيئة الهاتف بنظام Android
-    const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent || '');
+    const printElement = document.getElementById('printable-invoice');
+    if (!printElement) return;
 
-    if (isMobile) {
-      setIsGeneratingPDF(true);
-      setPdfNotice('جاري تجهيز القائمة للطباعة...');
-      try {
-        const result = await generateInvoicePDF();
-        if (result) {
-          const file = new File([result.blob], result.fileName, { type: 'application/pdf' });
-          
-          if (navigator.canShare && navigator.canShare({ files: [file] })) {
-            await navigator.share({
-              title: `قائمة ${invoice.invoiceNumber}`,
-              files: [file],
-            });
-            setPdfNotice(null);
-            setIsGeneratingPDF(false);
-            return;
-          }
+    // 2. استخدام iframe مخفي لتشغيل الطباعة المباشرة على أندرويد والويب
+    try {
+      const oldIframe = document.getElementById('print-iframe-helper');
+      if (oldIframe) oldIframe.remove();
 
-          // فتح المعاينة لطباعتها عبر طابعة النظام
-          const blobUrl = URL.createObjectURL(result.blob);
-          const printWindow = window.open(blobUrl, '_blank');
-          if (printWindow) {
-            printWindow.focus();
-          } else {
-            const a = document.createElement('a');
-            a.href = blobUrl;
-            a.download = result.fileName;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
+      const iframe = document.createElement('iframe');
+      iframe.id = 'print-iframe-helper';
+      iframe.style.position = 'fixed';
+      iframe.style.top = '-9999px';
+      iframe.style.left = '-9999px';
+      iframe.style.width = '0px';
+      iframe.style.height = '0px';
+      iframe.style.border = 'none';
+      document.body.appendChild(iframe);
+
+      const doc = iframe.contentWindow?.document || iframe.contentDocument;
+      if (doc) {
+        doc.open();
+        doc.write(`
+          <!DOCTYPE html>
+          <html dir="rtl" lang="ar">
+            <head>
+              <meta charset="utf-8" />
+              <title>قائمة ${invoice.invoiceNumber}</title>
+              <style>
+                @page {
+                  size: ${printLayout === 'a4' ? 'A4 portrait' : printLayout === 'a5' ? 'A5 portrait' : printLayout === 'thermal58' ? '58mm auto' : '80mm auto'};
+                  margin: ${isThermal ? '1mm' : '4mm'};
+                }
+                body {
+                  margin: 0;
+                  padding: ${isThermal ? '2px' : '8px'};
+                  direction: rtl;
+                  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Tahoma, Arial, sans-serif;
+                  background: #fff;
+                  color: #000;
+                }
+                table { width: 100%; border-collapse: collapse; }
+                th, td { border: 1px solid #000; padding: 4px; }
+                .no-print { display: none !important; }
+                img { max-width: 100%; }
+              </style>
+            </head>
+            <body>
+              ${printElement.innerHTML}
+            </body>
+          </html>
+        `);
+        doc.close();
+
+        setTimeout(() => {
+          try {
+            iframe.contentWindow?.focus();
+            iframe.contentWindow?.print();
+          } catch {
+            window.print();
           }
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
-        }
-      } catch (err) {
-        console.error('Mobile print error:', err);
-      } finally {
-        setIsGeneratingPDF(false);
-        setPdfNotice(null);
+          setTimeout(() => {
+            iframe.remove();
+          }, 4000);
+        }, 350);
+        return;
       }
-      return;
+    } catch (e) {
+      console.warn('Iframe printing failed, using fallback', e);
     }
 
-    // 3. بيئة المتصفح العادية
+    // 3. احتياطي مباشر
     window.scrollTo(0, 0);
-    document.documentElement.scrollTop = 0;
-    document.body.scrollTop = 0;
-
-    if (scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = 0;
-    }
-
     setTimeout(() => {
       window.print();
     }, 100);
   };
 
-  // دالة حفظ ملف الـ PDF مع دعم المشاركة للأندرويد
+  // دالة حفظ ملف الـ PDF
   const handleDownloadPDF = async () => {
     setIsGeneratingPDF(true);
-    setPdfNotice('جاري إنشاء ملف PDF...');
+    setPdfNotice('جاري إنشاء ملف PDF وتجهيزه للتحميل...');
     try {
       const result = await generateInvoicePDF();
       if (!result) return;
 
       const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent || '');
-      const file = new File([result.blob], result.fileName, { type: 'application/pdf' });
 
-      // استخدام مشاركة النظام على الموبايل لحفظ الملف في مجلد التنزيلات أو فتحه
-      if (isMobile && navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({
-          title: `حفظ قائمة ${invoice.invoiceNumber}`,
-          files: [file],
-        });
-        setPdfNotice('تم فتح خيارات الحفظ بنجاح');
-        setTimeout(() => setPdfNotice(null), 3000);
+      // إذا كان جهاز محمول، فتح مربع الطباعة/الحفظ كـ PDF مباشرة لضمان الحفظ في مجلد التنزيلات
+      if (isMobile) {
+        handlePrint();
+        setPdfNotice('اختر "حفظ بتنسيق PDF" من أعلى شاشة الطباعة');
+        setTimeout(() => setPdfNotice(null), 5000);
         return;
       }
 
-      // تنزيل مباشر للكمبيوتر والمتصفحات
+      // أجهزة الكمبيوتر
       const url = URL.createObjectURL(result.blob);
       const a = document.createElement('a');
       a.href = url;
@@ -288,14 +301,13 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+
       setPdfNotice('تم تحميل ملف PDF بنجاح');
-      setTimeout(() => setPdfNotice(null), 4000);
+      setTimeout(() => setPdfNotice(null), 3000);
     } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        console.error('Error downloading PDF:', err);
-        setPdfNotice('حدث خطأ أثناء تنزيل الملف');
-        setTimeout(() => setPdfNotice(null), 4000);
-      }
+      console.error('Error downloading PDF:', err);
+      setPdfNotice('حدث خطأ أثناء تنزيل الملف');
+      setTimeout(() => setPdfNotice(null), 4000);
     } finally {
       setIsGeneratingPDF(false);
     }
@@ -305,11 +317,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
     setIsGeneratingPDF(true);
     setPdfNotice(null);
     try {
-      const result = await generateInvoicePDF();
-      if (!result) throw new Error('فشل إنشاء ملف الفاتورة');
-
-      const file = new File([result.blob], result.fileName, { type: 'application/pdf' });
-
       let summaryText = `📋 *فاتورة مبيعات: ${settings.storeName}*\n`;
       summaryText += `رقم القائمة: ${invoice.invoiceNumber}\n`;
       summaryText += `التاريخ: ${dayName} ${dateFormatted}\n`;
@@ -318,27 +325,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
       if (totalRemainingDebt > 0) {
         summaryText += `مجموع الديون بذمة العميل: ${totalRemainingDebt.toLocaleString()} ${currencyLabel}\n`;
       }
-      summaryText += `\n📄 مرفق ملف القائمة بصيغة PDF.`;
-
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({
-          title: `قائمة ${invoice.invoiceNumber}`,
-          text: summaryText,
-          files: [file],
-        });
-        setPdfNotice('تم فتح المشاركة بنجاح');
-        setTimeout(() => setPdfNotice(null), 3000);
-        return;
-      }
-
-      const url = URL.createObjectURL(result.blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = result.fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      summaryText += `\nالمفكر المحاسبي`;
 
       let targetPhone = invoice.customerPhone ? invoice.customerPhone.replace(/[^0-9]/g, '') : '';
       if (targetPhone) {
@@ -363,17 +350,15 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
       document.body.removeChild(link);
 
       setIsCopied(true);
-      setPdfNotice('تم تنزيل PDF وفتح الواتساب');
+      setPdfNotice('تم فتح الواتساب بنجاح');
       setTimeout(() => {
         setIsCopied(false);
         setPdfNotice(null);
-      }, 4000);
+      }, 3000);
     } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        console.error('WhatsApp PDF share notice:', err);
-        setPdfNotice('تعذر إكمال المشاركة عبر الواتساب تلقائياً');
-        setTimeout(() => setPdfNotice(null), 4000);
-      }
+      console.error('WhatsApp share error:', err);
+      setPdfNotice('تعذر فتح الواتساب');
+      setTimeout(() => setPdfNotice(null), 3000);
     } finally {
       setIsGeneratingPDF(false);
     }
@@ -574,7 +559,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
               ) : isCopied ? (
                 <Check className="w-3.5 h-3.5 text-emerald-600" />
               ) : null}
-              <span>واتساب (PDF)</span>
+              <span>واتساب</span>
             </button>
 
             {/* زر استرجاع جزئي للقائمة */}
