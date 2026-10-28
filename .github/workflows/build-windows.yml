@@ -18,8 +18,10 @@ jobs:
       with:
         node-version: 20
 
-    - name: Install Dependencies
-      run: npm install --legacy-peer-deps
+    - - name: Install Dependencies
+  run: |
+    rm -f package-lock.json bun.lock
+    npm install --force --no-audit --no-fund
 
     - name: Build Web & Windows Installer
       run: npm run electron:build
