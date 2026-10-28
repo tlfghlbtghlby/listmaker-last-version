@@ -47,6 +47,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
       setActiveTemplate(settings.invoiceTemplate);
     }
   }, [settings.invoiceTemplate]);
+
   const [printLayout, setPrintLayout] = useState<'a4' | 'a5' | 'thermal80' | 'thermal58'>(
     settings.printFormat === 'thermal58'
       ? 'thermal58'
@@ -113,21 +114,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
       })
     : invoice.items;
 
-  const handlePrint = () => {
-    window.scrollTo(0, 0);
-    document.documentElement.scrollTop = 0;
-    document.body.scrollTop = 0;
-
-    if (scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = 0;
-    }
-
-    setTimeout(() => {
-      window.print();
-    }, 50);
-  };
-
-  const generateInvoicePDF = async (): Promise<{ blob: Blob; fileName: string } | null> => {
+  const generateInvoicePDF = async (): Promise<{ blob: Blob; fileName: string; dataUrl: string } | null> => {
     const element = document.getElementById('printable-invoice');
     if (!element) return null;
 
@@ -196,7 +183,79 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
     }
 
     const blob = pdf.output('blob');
-    return { blob, fileName };
+    return { blob, fileName, dataUrl };
+  };
+
+  // دالة الطباعة المتوافقة مع Android و Windows و Web
+  const handlePrint = async () => {
+    // 1. إذا كان التطبيق يعمل داخل بيئة إلكترون على ويندوز
+    if ((window as any).electronAPI?.printInvoice) {
+      try {
+        (window as any).electronAPI.printInvoice();
+        return;
+      } catch (e) {
+        console.warn('Electron print fallback to standard print', e);
+      }
+    }
+
+    // 2. التحقق مما إذا كان يعمل على هاتف أندرويد عبر Capacitor
+    const isAndroid = /android/i.test(navigator.userAgent || '');
+
+    if (isAndroid) {
+      setIsGeneratingPDF(true);
+      setPdfNotice('جاري تجهيز القائمة للطباعة...');
+      try {
+        const result = await generateInvoicePDF();
+        if (result) {
+          const file = new File([result.blob], result.fileName, { type: 'application/pdf' });
+          
+          // إذا كانت ميزة المشاركة الأصلية لنظام أندرويد متاحة
+          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({
+              title: `طباعة قائمة ${invoice.invoiceNumber}`,
+              files: [file],
+            });
+            setPdfNotice(null);
+            setIsGeneratingPDF(false);
+            return;
+          }
+
+          // فتح الـ PDF في نافذة جديدة لاستدعاء نافذة طباعة الهاتف
+          const blobUrl = URL.createObjectURL(result.blob);
+          const printWindow = window.open(blobUrl, '_blank');
+          if (printWindow) {
+            printWindow.focus();
+          } else {
+            // بديل: تحميل الملف وفتح المعاينة
+            const a = document.createElement('a');
+            a.href = blobUrl;
+            a.download = result.fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+          }
+          setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+        }
+      } catch (err) {
+        console.error('Android print error:', err);
+      } finally {
+        setIsGeneratingPDF(false);
+        setPdfNotice(null);
+      }
+    }
+
+    // 3. بيئة المتصفحات العادية
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = 0;
+    }
+
+    setTimeout(() => {
+      window.print();
+    }, 100);
   };
 
   const handleDownloadPDF = async () => {
@@ -310,12 +369,10 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
           optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb']
         });
       } else {
-        setPrintLayout('thermal80');
-        setTimeout(() => window.print(), 200);
+        handlePrint();
       }
     } catch (e) {
-      setPrintLayout('thermal80');
-      setTimeout(() => window.print(), 200);
+      handlePrint();
     }
   };
 
@@ -454,9 +511,14 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
             <button
               type="button"
               onClick={handlePrint}
+              disabled={isGeneratingPDF}
               className="px-3.5 py-1.5 text-xs font-bold text-white bg-slate-900 hover:bg-black rounded-lg shadow-xs flex items-center gap-1.5 transition cursor-pointer"
             >
-              <Printer className="w-4 h-4" />
+              {isGeneratingPDF ? (
+                <RefreshCw className="w-4 h-4 animate-spin text-white" />
+              ) : (
+                <Printer className="w-4 h-4" />
+              )}
               <span>طباعة القائمة</span>
             </button>
 
@@ -493,8 +555,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600" />
               ) : isCopied ? (
                 <Check className="w-3.5 h-3.5 text-emerald-600" />
-              ) : (
-                <Share2 className="w-3.5 h-3.5 text-emerald-600" />
               )}
               <span>واتساب (PDF)</span>
             </button>
