@@ -25,7 +25,6 @@ interface InvoicePrintModalProps {
   onClose: () => void;
 }
 
-// ختم تجاري على شكل نجمة مسننة
 const StarburstSeal: React.FC<{ text: string }> = ({ text }) => (
   <div className="relative flex items-center justify-center w-14 h-14 sm:w-16 sm:h-16 select-none shrink-0">
     <svg viewBox="0 0 100 100" className="w-full h-full fill-none stroke-black stroke-[2]">
@@ -63,22 +62,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
   const [isPartialReturnOpen, setIsPartialReturnOpen] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    const handleBeforePrint = () => {
-      window.scrollTo(0, 0);
-      document.documentElement.scrollTop = 0;
-      document.body.scrollTop = 0;
-      if (scrollContainerRef.current) {
-        scrollContainerRef.current.scrollTop = 0;
-      }
-    };
-
-    window.addEventListener('beforeprint', handleBeforePrint);
-    return () => {
-      window.removeEventListener('beforeprint', handleBeforePrint);
-    };
-  }, []);
-
   if (!invoice) return null;
 
   const isThermal = printLayout === 'thermal80' || printLayout === 'thermal58';
@@ -113,270 +96,61 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
       })
     : invoice.items;
 
-  const generateInvoicePDF = async (): Promise<{ blob: Blob; fileName: string; dataUrl: string } | null> => {
-    const element = document.getElementById('printable-invoice');
-    if (!element) return null;
-
-    const dataUrl = await toPng(element, {
-      quality: 1,
-      pixelRatio: 2.5,
-      backgroundColor: '#ffffff',
-      skipFonts: true,
-      style: {
-        letterSpacing: 'normal',
-        wordSpacing: 'normal',
-        fontFamily: "'Cairo', 'Tajawal', Tahoma, Arial, sans-serif",
-      },
-    });
-
-    const img = new Image();
-    img.src = dataUrl;
-    await new Promise((resolve) => {
-      img.onload = resolve;
-    });
-
-    const aspect = img.naturalHeight / (img.naturalWidth || 1);
-    let pdf: jsPDF;
-    const fileName = `قائمة_${invoice.invoiceNumber}.pdf`;
-
-    if (printLayout === 'thermal58') {
-      const imgWidth = 48;
-      const imgHeight = imgWidth * aspect;
-      pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: [58, imgHeight + 4]
-      });
-      pdf.addImage(dataUrl, 'PNG', 5, 2, imgWidth, imgHeight);
-    } else if (printLayout === 'thermal80') {
-      const imgWidth = 72;
-      const imgHeight = imgWidth * aspect;
-      pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: [80, imgHeight + 4]
-      });
-      pdf.addImage(dataUrl, 'PNG', 4, 2, imgWidth, imgHeight);
-    } else if (printLayout === 'a5') {
-      pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: 'a5'
-      });
-      const pdfWidth = 148;
-      const pdfHeight = 210;
-      const imgWidth = pdfWidth - 8;
-      const imgHeight = imgWidth * aspect;
-      pdf.addImage(dataUrl, 'PNG', 4, 4, imgWidth, Math.min(imgHeight, pdfHeight - 8));
-    } else {
-      pdf = new jsPDF({
-        orientation: 'portrait',
-        unit: 'mm',
-        format: 'a4'
-      });
-      const pdfWidth = 210;
-      const pdfHeight = 297;
-      const imgWidth = pdfWidth - 12;
-      const imgHeight = imgWidth * aspect;
-      pdf.addImage(dataUrl, 'PNG', 6, 6, imgWidth, Math.min(imgHeight, pdfHeight - 12));
+  // دالة الطباعة الأصلية
+  const handlePrint = () => {
+    // 1. نظام أندرويد عبر الجسر الأصلي (يفتح نافذة الطباعة وحفظ PDF الخاصة بالنظام)
+    if ((window as any).AndroidPrinter?.print) {
+      (window as any).AndroidPrinter.print();
+      return;
     }
 
-    const blob = pdf.output('blob');
-    return { blob, fileName, dataUrl };
-  };
-
-  // دالة الطباعة المتوافقة مع أندرويد والويندوز والمتصفح
-  const handlePrint = async () => {
-    // 1. بيئة Electron لويندوز
+    // 2. بيئة Electron لويندوز
     if ((window as any).electronAPI?.printInvoice) {
-      try {
-        (window as any).electronAPI.printInvoice();
-        return;
-      } catch (e) {
-        console.warn('Electron print fallback', e);
-      }
+      (window as any).electronAPI.printInvoice();
+      return;
     }
 
-    const printElement = document.getElementById('printable-invoice');
-    if (!printElement) return;
-
-    // 2. استخدام iframe مخفي لتشغيل الطباعة المباشرة على أندرويد والويب
-    try {
-      const oldIframe = document.getElementById('print-iframe-helper');
-      if (oldIframe) oldIframe.remove();
-
-      const iframe = document.createElement('iframe');
-      iframe.id = 'print-iframe-helper';
-      iframe.style.position = 'fixed';
-      iframe.style.top = '-9999px';
-      iframe.style.left = '-9999px';
-      iframe.style.width = '0px';
-      iframe.style.height = '0px';
-      iframe.style.border = 'none';
-      document.body.appendChild(iframe);
-
-      const doc = iframe.contentWindow?.document || iframe.contentDocument;
-      if (doc) {
-        doc.open();
-        doc.write(`
-          <!DOCTYPE html>
-          <html dir="rtl" lang="ar">
-            <head>
-              <meta charset="utf-8" />
-              <title>قائمة ${invoice.invoiceNumber}</title>
-              <style>
-                @page {
-                  size: ${printLayout === 'a4' ? 'A4 portrait' : printLayout === 'a5' ? 'A5 portrait' : printLayout === 'thermal58' ? '58mm auto' : '80mm auto'};
-                  margin: ${isThermal ? '1mm' : '4mm'};
-                }
-                body {
-                  margin: 0;
-                  padding: ${isThermal ? '2px' : '8px'};
-                  direction: rtl;
-                  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Tahoma, Arial, sans-serif;
-                  background: #fff;
-                  color: #000;
-                }
-                table { width: 100%; border-collapse: collapse; }
-                th, td { border: 1px solid #000; padding: 4px; }
-                .no-print { display: none !important; }
-                img { max-width: 100%; }
-              </style>
-            </head>
-            <body>
-              ${printElement.innerHTML}
-            </body>
-          </html>
-        `);
-        doc.close();
-
-        setTimeout(() => {
-          try {
-            iframe.contentWindow?.focus();
-            iframe.contentWindow?.print();
-          } catch {
-            window.print();
-          }
-          setTimeout(() => {
-            iframe.remove();
-          }, 4000);
-        }, 350);
-        return;
-      }
-    } catch (e) {
-      console.warn('Iframe printing failed, using fallback', e);
-    }
-
-    // 3. احتياطي مباشر
-    window.scrollTo(0, 0);
-    setTimeout(() => {
-      window.print();
-    }, 100);
+    // 3. متصفح الويب العادي
+    window.print();
   };
 
-  // دالة حفظ ملف الـ PDF
-  const handleDownloadPDF = async () => {
-    setIsGeneratingPDF(true);
-    setPdfNotice('جاري إنشاء ملف PDF وتجهيزه للتحميل...');
-    try {
-      const result = await generateInvoicePDF();
-      if (!result) return;
-
-      const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent || '');
-
-      // إذا كان جهاز محمول، فتح مربع الطباعة/الحفظ كـ PDF مباشرة لضمان الحفظ في مجلد التنزيلات
-      if (isMobile) {
-        handlePrint();
-        setPdfNotice('اختر "حفظ بتنسيق PDF" من أعلى شاشة الطباعة');
-        setTimeout(() => setPdfNotice(null), 5000);
-        return;
-      }
-
-      // أجهزة الكمبيوتر
-      const url = URL.createObjectURL(result.blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = result.fileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      setPdfNotice('تم تحميل ملف PDF بنجاح');
-      setTimeout(() => setPdfNotice(null), 3000);
-    } catch (err: any) {
-      console.error('Error downloading PDF:', err);
-      setPdfNotice('حدث خطأ أثناء تنزيل الملف');
-      setTimeout(() => setPdfNotice(null), 4000);
-    } finally {
-      setIsGeneratingPDF(false);
+  const handleDownloadPDF = () => {
+    if ((window as any).AndroidPrinter?.print) {
+      setPdfNotice('اختر "حفظ بتنسيق PDF" من القائمة العلوية لشاشة الطباعة');
+      (window as any).AndroidPrinter.print();
+      setTimeout(() => setPdfNotice(null), 5000);
+      return;
     }
+    handlePrint();
   };
 
   const handleShareWhatsApp = async () => {
-    setIsGeneratingPDF(true);
-    setPdfNotice(null);
-    try {
-      let summaryText = `📋 *فاتورة مبيعات: ${settings.storeName}*\n`;
-      summaryText += `رقم القائمة: ${invoice.invoiceNumber}\n`;
-      summaryText += `التاريخ: ${dayName} ${dateFormatted}\n`;
-      summaryText += `حضرة السيد: ${invoice.customerName}\n`;
-      summaryText += `المبلغ المطلوب: ${invoice.total.toLocaleString()} ${currencyLabel}\n`;
-      if (totalRemainingDebt > 0) {
-        summaryText += `مجموع الديون بذمة العميل: ${totalRemainingDebt.toLocaleString()} ${currencyLabel}\n`;
-      }
-      summaryText += `\nالمفكر المحاسبي`;
-
-      let targetPhone = invoice.customerPhone ? invoice.customerPhone.replace(/[^0-9]/g, '') : '';
-      if (targetPhone) {
-        if (targetPhone.startsWith('00964')) {
-          targetPhone = targetPhone.substring(2);
-        } else if (targetPhone.startsWith('07') && targetPhone.length === 11) {
-          targetPhone = '964' + targetPhone.substring(1);
-        } else if (targetPhone.startsWith('7') && targetPhone.length === 10) {
-          targetPhone = '964' + targetPhone;
-        }
-      }
-      const whatsappUrl = targetPhone
-        ? `https://api.whatsapp.com/send?phone=${targetPhone}&text=${encodeURIComponent(summaryText)}`
-        : `https://api.whatsapp.com/send?text=${encodeURIComponent(summaryText)}`;
-
-      const link = document.createElement('a');
-      link.href = whatsappUrl;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      setIsCopied(true);
-      setPdfNotice('تم فتح الواتساب بنجاح');
-      setTimeout(() => {
-        setIsCopied(false);
-        setPdfNotice(null);
-      }, 3000);
-    } catch (err: any) {
-      console.error('WhatsApp share error:', err);
-      setPdfNotice('تعذر فتح الواتساب');
-      setTimeout(() => setPdfNotice(null), 3000);
-    } finally {
-      setIsGeneratingPDF(false);
+    let summaryText = `📋 *فاتورة مبيعات: ${settings.storeName}*\n`;
+    summaryText += `رقم القائمة: ${invoice.invoiceNumber}\n`;
+    summaryText += `التاريخ: ${dayName} ${dateFormatted}\n`;
+    summaryText += `حضرة السيد: ${invoice.customerName}\n`;
+    summaryText += `المبلغ المطلوب: ${invoice.total.toLocaleString()} ${currencyLabel}\n`;
+    if (totalRemainingDebt > 0) {
+      summaryText += `مجموع الديون بذمة العميل: ${totalRemainingDebt.toLocaleString()} ${currencyLabel}\n`;
     }
-  };
 
-  const handleBluetoothPrint = async () => {
-    try {
-      if ('bluetooth' in navigator) {
-        await (navigator as any).bluetooth.requestDevice({
-          acceptAllDevices: true,
-          optionalServices: ['000018f0-0000-1000-8000-00805f9b34fb']
-        });
-      } else {
-        handlePrint();
+    let targetPhone = invoice.customerPhone ? invoice.customerPhone.replace(/[^0-9]/g, '') : '';
+    if (targetPhone) {
+      if (targetPhone.startsWith('00964')) {
+        targetPhone = targetPhone.substring(2);
+      } else if (targetPhone.startsWith('07') && targetPhone.length === 11) {
+        targetPhone = '964' + targetPhone.substring(1);
+      } else if (targetPhone.startsWith('7') && targetPhone.length === 10) {
+        targetPhone = '964' + targetPhone;
       }
-    } catch (e) {
-      handlePrint();
     }
+    const whatsappUrl = targetPhone
+      ? `https://api.whatsapp.com/send?phone=${targetPhone}&text=${encodeURIComponent(summaryText)}`
+      : `https://api.whatsapp.com/send?text=${encodeURIComponent(summaryText)}`;
+
+    window.open(whatsappUrl, '_system');
+    setIsCopied(true);
+    setTimeout(() => setIsCopied(false), 3000);
   };
 
   return (
@@ -384,14 +158,40 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
       <style dangerouslySetInnerHTML={{
         __html: `
           @media print {
+            body {
+              visibility: hidden !important;
+              background: transparent !important;
+            }
+            .print-modal-overlay {
+              position: static !important;
+              background: transparent !important;
+              padding: 0 !important;
+            }
+            .print-modal-card {
+              border: none !important;
+              box-shadow: none !important;
+              max-width: none !important;
+              max-height: none !important;
+              overflow: visible !important;
+            }
+            #printable-invoice, #printable-invoice * {
+              visibility: visible !important;
+            }
+            #printable-invoice {
+              position: absolute !important;
+              left: 0 !important;
+              top: 0 !important;
+              width: 100% !important;
+              margin: 0 !important;
+              padding: 10px !important;
+            }
+            .no-print {
+              display: none !important;
+            }
             @page {
               size: ${printLayout === 'a4' ? 'A4 portrait' : printLayout === 'a5' ? 'A5 portrait' : printLayout === 'thermal58' ? '58mm auto' : '80mm auto'};
-              margin: ${isThermal ? '1mm 1mm 1mm 1mm' : printLayout === 'a5' ? '2mm 4mm 4mm 4mm' : '2mm 5mm 5mm 5mm'} !important;
+              margin: ${isThermal ? '1mm' : '4mm'} !important;
             }
-            ${printLayout === 'thermal58' ? '#printable-invoice { width: 48mm !important; max-width: 48mm !important; padding: 0 !important; font-size: 10px !important; }' : ''}
-            ${printLayout === 'thermal80' ? '#printable-invoice { width: 72mm !important; max-width: 72mm !important; padding: 0 !important; font-size: 11px !important; }' : ''}
-            ${printLayout === 'a5' ? '#printable-invoice { width: 100% !important; max-width: 100% !important; }' : ''}
-            ${printLayout === 'a4' ? '#printable-invoice { width: 100% !important; max-width: 100% !important; }' : ''}
           }
         `
       }} />
@@ -458,7 +258,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
               </div>
             </div>
 
-            {/* قالب الفاتورة: كلاسيكي أو عصري ملون */}
             <div className="flex items-center gap-1.5 border-r border-slate-300 pr-2.5 sm:mr-1">
               <span className="text-xs font-bold text-slate-700">شكل القائمة:</span>
               <div className="flex items-center bg-slate-200 p-0.5 rounded-lg text-xs font-bold">
@@ -470,7 +269,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                       ? 'bg-white text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
-                  title="التصميم التقليدي الكلاسيكي ذو الأختام النجمية"
                 >
                   كلاسيكي
                 </button>
@@ -482,7 +280,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                       ? 'bg-blue-600 text-white shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
-                  title="التصميم العصري الملون المطابق للنموذج التجاري"
                 >
                   <Sparkles className="w-3 h-3 text-amber-300" />
                   <span>عصري ملون</span>
@@ -514,61 +311,35 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
             <button
               type="button"
               onClick={handlePrint}
-              disabled={isGeneratingPDF}
               className="px-3.5 py-1.5 text-xs font-bold text-white bg-slate-900 hover:bg-black rounded-lg shadow-xs flex items-center gap-1.5 transition cursor-pointer"
             >
-              {isGeneratingPDF ? (
-                <RefreshCw className="w-4 h-4 animate-spin text-white" />
-              ) : (
-                <Printer className="w-4 h-4" />
-              )}
+              <Printer className="w-4 h-4" />
               <span>طباعة القائمة</span>
             </button>
 
             <button
               type="button"
               onClick={handleDownloadPDF}
-              disabled={isGeneratingPDF}
               className="px-3.5 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 rounded-lg flex items-center gap-1.5 transition cursor-pointer"
             >
-              {isGeneratingPDF ? (
-                <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-700" />
-              ) : (
-                <FileDown className="w-3.5 h-3.5 text-emerald-700" />
-              )}
+              <FileDown className="w-3.5 h-3.5 text-emerald-700" />
               <span>حفظ PDF</span>
             </button>
 
             <button
               type="button"
-              onClick={handleBluetoothPrint}
-              className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 border border-slate-300 rounded-lg flex items-center gap-1.5 transition cursor-pointer"
-            >
-              <Bluetooth className="w-3.5 h-3.5 text-amber-600" />
-              <span>بلوتوث</span>
-            </button>
-
-            <button
-              type="button"
               onClick={handleShareWhatsApp}
-              disabled={isGeneratingPDF}
               className="px-3.5 py-1.5 text-xs font-bold text-emerald-700 bg-white hover:bg-emerald-50 border border-emerald-400 rounded-lg flex items-center gap-1.5 transition cursor-pointer shadow-xs"
             >
-              {isGeneratingPDF ? (
-                <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600" />
-              ) : isCopied ? (
-                <Check className="w-3.5 h-3.5 text-emerald-600" />
-              ) : null}
+              {isCopied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : null}
               <span>واتساب</span>
             </button>
 
-            {/* زر استرجاع جزئي للقائمة */}
             {hasPermission('canReturnInvoice') && invoice.status !== 'returned' && (
               <button
                 type="button"
                 onClick={() => setIsPartialReturnOpen(true)}
                 className="px-3.5 py-1.5 text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg flex items-center gap-1.5 transition cursor-pointer shadow-xs"
-                title="استرجاع جزئي لمواد محددة من هذه القائمة مع ذكر السبب"
               >
                 <PackageMinus className="w-3.5 h-3.5 text-indigo-600" />
                 <span>استرجاع جزئي</span>
@@ -620,10 +391,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
             }`}
           >
 
-            {/* A4 and A5 Full Sheet Invoice */}
             {!isThermal ? (
               <div className="space-y-2.5 text-black leading-tight">
-                {/* Header Box: Modern vs Classic */}
                 {activeTemplate === 'modern' ? (
                   <ModernInvoiceHeader
                     settings={settings}
@@ -657,21 +426,10 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                   </div>
                 )}
 
-                {/* Metadata Bar */}
                 <div className="border border-black rounded-md px-3 py-1.5 flex items-center justify-between text-xs font-bold text-black flex-wrap gap-2">
                   <div className="flex items-center gap-1.5">
                     <span>رقم القائمة:</span>
                     <span className="font-mono text-sm underline">{invoice.invoiceNumber}</span>
-                    {invoice.status === 'returned' && (
-                      <span className="px-1.5 py-0.5 rounded bg-black text-white text-[10px] font-black mr-1">
-                        مرتجعة بالكامل
-                      </span>
-                    )}
-                    {(invoice.isPartiallyReturned || invoice.status === 'partially_returned') && (
-                      <span className="px-1.5 py-0.5 rounded border border-black text-black text-[10px] font-black mr-1">
-                        مرتجعة جزئياً
-                      </span>
-                    )}
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span>التاريخ:</span>
@@ -682,15 +440,8 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                     <span>السيد:</span>
                     <span className="font-bold underline">{invoice.customerName}</span>
                   </div>
-                  {invoice.salesRepName && (invoice.showRepOnInvoice ?? true) && (
-                    <div className="flex items-center gap-1.5 border-r border-black/40 pr-2">
-                      <span>المندوب:</span>
-                      <span className="font-bold underline">{invoice.salesRepName}</span>
-                    </div>
-                  )}
                 </div>
 
-                {/* Items Table */}
                 <div className="border border-black rounded-md overflow-hidden">
                   <table className="w-full text-right border-collapse text-xs">
                     <thead>
@@ -711,18 +462,9 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                             <td className="py-1 px-2 border-l border-black text-center font-mono">{index + 1}</td>
                             <td className="py-1 px-2 border-l border-black">
                               <div>{item.name || item.productName}</div>
-                              {returnedQty > 0 && (
-                                <div className="text-[10px] text-red-600 font-semibold print:text-black">
-                                  [مسترجع: {returnedQty} {item.unit || 'قطعة'}]
-                                </div>
-                              )}
                             </td>
                             <td className="py-1 px-2 border-l border-black text-center font-mono">
-                              {returnedQty > 0 ? (
-                                <span>{netQty} <span className="text-[9px] text-slate-500 font-normal">({item.quantity})</span></span>
-                              ) : (
-                                item.isWeighted ? `${item.quantity} كغم` : item.quantity
-                              )}
+                              {item.isWeighted ? `${item.quantity} كغم` : netQty}
                             </td>
                             <td className="py-1 px-2 border-l border-black text-center font-mono">{item.unitPrice.toLocaleString()}</td>
                             <td className="py-1 px-2 text-center font-mono">{Math.round(netQty * item.unitPrice).toLocaleString()}</td>
@@ -733,35 +475,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                   </table>
                 </div>
 
-                {/* Returned Items Box with Reasons */}
-                {invoice.returnedItems && invoice.returnedItems.length > 0 && (
-                  <div className="border border-black rounded-md p-2 bg-slate-50/70 text-xs">
-                    <div className="font-black border-b border-black/30 pb-1 mb-1 flex items-center justify-between">
-                      <span>سجل تفاصيل المواد المسترجعة والسبب:</span>
-                      <span className="font-mono text-[11px]">
-                        إجمالي المرتجع: {invoice.totalReturnedAmount?.toLocaleString()} {currencyLabel}
-                      </span>
-                    </div>
-                    <div className="space-y-1">
-                      {invoice.returnedItems.map((ret, rIdx) => (
-                        <div key={rIdx} className="flex items-center justify-between text-[11px] font-bold">
-                          <div>
-                            <span>{rIdx + 1}. {ret.productName}</span> ({ret.quantity} {ret.unit || 'قطعة'})
-                            <span className="text-slate-700 mr-2 font-semibold">
-                              السبب: <span className="underline">{ret.reason}</span>
-                            </span>
-                            {ret.notes && <span className="text-slate-500 mr-1 text-[10px]">({ret.notes})</span>}
-                          </div>
-                          <span className="font-mono text-red-600 print:text-black">
-                            -{ret.refundAmount.toLocaleString()} {currencyLabel}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Summary Table */}
                 <div className="flex justify-between items-start gap-3 pt-1">
                   <div className="text-[11px] text-slate-700 flex-1">
                     {settings.invoiceFooterNote && (
@@ -778,12 +491,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                           <td className="py-1 px-2 border-l border-black bg-slate-100">مجموع القائمة</td>
                           <td className="py-1 px-2 font-mono text-left">{invoiceTotal.toLocaleString()} {currencyLabel}</td>
                         </tr>
-                        {invoice.totalReturnedAmount && invoice.totalReturnedAmount > 0 ? (
-                          <tr className="border-b border-black bg-slate-50 text-red-700 print:text-black">
-                            <td className="py-1 px-2 border-l border-black">المسترجع</td>
-                            <td className="py-1 px-2 font-mono text-left">-{invoice.totalReturnedAmount.toLocaleString()} {currencyLabel}</td>
-                          </tr>
-                        ) : null}
                         {previousDebt > 0 && (
                           <tr className="border-b border-black">
                             <td className="py-1 px-2 border-l border-black bg-slate-100">حساب سابق</td>
@@ -807,50 +514,13 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                   </div>
                 </div>
 
-                {/* Footer Signatures */}
                 <div className="flex justify-between pt-4 px-4 text-xs font-bold">
                   <div>توقيع المستلم: .....................</div>
                   <div>توقيع البائع: .....................</div>
                 </div>
-
-                {/* العلامة المائية الرسمية في الزاويتين السفليتين */}
-                <div className="pt-3 mt-2 border-t border-slate-300 print:border-black/30 flex items-center justify-between px-2 text-[10px] text-slate-500 select-none">
-                  {/* الزاوية السفلية اليمنى */}
-                  <div className="flex items-center gap-2 opacity-75 print:opacity-40">
-                    <img 
-                      src="/assets/aistudio/1792973910260_3946b0af.jpg" 
-                      alt="شعار المفكر" 
-                      className="w-6 h-6 rounded-full object-cover border border-slate-400 print:border-black shrink-0"
-                    />
-                    <div className="text-right leading-tight">
-                      <div className="font-bold text-[10px] text-slate-800 print:text-black">برنامج المفكر المحاسبي</div>
-                      <div className="text-[8px] text-slate-500 print:text-black">المفكر سمارت • نظام معتمد</div>
-                    </div>
-                  </div>
-
-                  {/* نص توثيق وسطي خفيف */}
-                  <div className="text-[8px] font-mono text-slate-400 print:text-black/60 text-center hidden sm:block">
-                    AL-MUFAKIR SMART POS SYSTEM
-                  </div>
-
-                  {/* الزاوية السفلية اليسرى */}
-                  <div className="flex items-center gap-2 opacity-75 print:opacity-40" dir="ltr">
-                    <img 
-                      src="/assets/aistudio/1792973910260_3946b0af.jpg" 
-                      alt="Al-Mufakir Smart" 
-                      className="w-6 h-6 rounded-full object-cover border border-slate-400 print:border-black shrink-0"
-                    />
-                    <div className="text-left leading-tight">
-                      <div className="font-bold text-[10px] text-slate-800 print:text-black">Al-Mufakir Smart</div>
-                      <div className="text-[8px] text-slate-500 print:text-black">POS System • Verified</div>
-                    </div>
-                  </div>
-                </div>
               </div>
             ) : (
-              /* Thermal Roll Format (58mm / 80mm) */
               <div className="space-y-2 text-black font-mono leading-tight">
-                {/* Header: Modern vs Classic for Thermal */}
                 {activeTemplate === 'modern' ? (
                   <ModernInvoiceHeader
                     settings={settings}
@@ -880,12 +550,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                     <span>العميل:</span>
                     <span className="font-bold">{invoice.customerName}</span>
                   </div>
-                  {invoice.salesRepName && (invoice.showRepOnInvoice ?? true) && (
-                    <div className="flex justify-between">
-                      <span>المندوب:</span>
-                      <span className="font-bold">{invoice.salesRepName}</span>
-                    </div>
-                  )}
                 </div>
 
                 <table className="w-full text-right text-[10px] border-collapse">
@@ -904,14 +568,9 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                         <tr key={index} className="border-b border-dotted border-black/50">
                           <td className="py-0.5 leading-tight">
                             <div>{item.name || item.productName}</div>
-                            {returnedQty > 0 && (
-                              <div className="text-[8px] text-red-700 font-bold print:text-black">
-                                (مسترجع: {returnedQty})
-                              </div>
-                            )}
                           </td>
                           <td className="py-0.5 text-center font-bold">
-                            {returnedQty > 0 ? `${netQty}` : (item.isWeighted ? `${item.quantity} كغم` : item.quantity)}
+                            {item.isWeighted ? `${item.quantity} كغم` : netQty}
                           </td>
                           <td className="py-0.5 text-left font-bold">{Math.round(netQty * item.unitPrice).toLocaleString()}</td>
                         </tr>
@@ -920,36 +579,11 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                   </tbody>
                 </table>
 
-                {/* Returned Items in Thermal */}
-                {invoice.returnedItems && invoice.returnedItems.length > 0 && (
-                  <div className="border-t border-dashed border-black pt-1 pb-1 text-[9px] space-y-0.5">
-                    <div className="font-black">المواد المسترجعة:</div>
-                    {invoice.returnedItems.map((ret, rIdx) => (
-                      <div key={rIdx} className="flex justify-between">
-                        <span>{ret.productName} ({ret.quantity}) - {ret.reason}</span>
-                        <span className="font-bold">-{ret.refundAmount.toLocaleString()}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
                 <div className="border-t border-black pt-1.5 space-y-1 text-[11px] font-bold">
                   <div className="flex justify-between">
                     <span>مجموع القائمة:</span>
                     <span>{invoiceTotal.toLocaleString()} {currencyLabel}</span>
                   </div>
-                  {invoice.totalReturnedAmount && invoice.totalReturnedAmount > 0 ? (
-                    <div className="flex justify-between text-red-700 print:text-black">
-                      <span>المسترجع:</span>
-                      <span>-{invoice.totalReturnedAmount.toLocaleString()} {currencyLabel}</span>
-                    </div>
-                  ) : null}
-                  {previousDebt > 0 && (
-                    <div className="flex justify-between">
-                      <span>حساب سابق:</span>
-                      <span>{previousDebt.toLocaleString()} {currencyLabel}</span>
-                    </div>
-                  )}
                   <div className="flex justify-between text-xs font-black border-t border-dotted border-black pt-1">
                     <span>الإجمالي:</span>
                     <span>{grandTotal.toLocaleString()} {currencyLabel}</span>
@@ -963,37 +597,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                     <span>{totalRemainingDebt.toLocaleString()} {currencyLabel}</span>
                   </div>
                 </div>
-
-                {settings.invoiceFooterNote && (
-                  <div className="text-center text-[9px] pt-2 border-t border-dotted border-black">
-                    {settings.invoiceFooterNote}
-                  </div>
-                )}
-                
-                <div className="text-center text-[9px] text-slate-600 pt-1">
-                  شكراً لزيارتكم
-                </div>
-
-                {/* علامة مائية في الزاويتين السفليتين للإيصال الحراري */}
-                <div className="pt-2 mt-1 border-t border-dashed border-black/40 flex items-center justify-between text-[8px] text-slate-700 select-none opacity-85 print:opacity-40">
-                  <div className="flex items-center gap-1">
-                    <img 
-                      src="/assets/aistudio/1792973910260_3946b0af.jpg" 
-                      alt="المفكر" 
-                      className="w-4 h-4 rounded-full object-cover border border-black/70 shrink-0"
-                    />
-                    <span className="font-bold text-[8px]">المفكر المحاسبي</span>
-                  </div>
-
-                  <div className="flex items-center gap-1" dir="ltr">
-                    <span className="font-bold text-[8px]">Al-Mufakir</span>
-                    <img 
-                      src="/assets/aistudio/1792973910260_3946b0af.jpg" 
-                      alt="Smart" 
-                      className="w-4 h-4 rounded-full object-cover border border-black/70 shrink-0"
-                    />
-                  </div>
-                </div>
               </div>
             )}
 
@@ -1002,7 +605,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
 
       </div>
 
-      {/* نافذة الاسترجاع الجزئي للقائمة المفتوحة */}
       <PartialReturnModal
         invoice={invoice}
         isOpen={isPartialReturnOpen}
