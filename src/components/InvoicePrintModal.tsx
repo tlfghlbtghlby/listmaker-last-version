@@ -186,22 +186,22 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
     return { blob, fileName, dataUrl };
   };
 
-  // دالة الطباعة المتوافقة مع Android و Windows و Web
+  // دالة الطباعة المتوافقة مع أندرويد والويندوز والمتصفح
   const handlePrint = async () => {
-    // 1. إذا كان التطبيق يعمل داخل بيئة إلكترون على ويندوز
+    // 1. بيئة Electron لويندوز
     if ((window as any).electronAPI?.printInvoice) {
       try {
         (window as any).electronAPI.printInvoice();
         return;
       } catch (e) {
-        console.warn('Electron print fallback to standard print', e);
+        console.warn('Electron print fallback', e);
       }
     }
 
-    // 2. التحقق مما إذا كان يعمل على هاتف أندرويد عبر Capacitor
-    const isAndroid = /android/i.test(navigator.userAgent || '');
+    // 2. بيئة الهاتف بنظام Android
+    const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent || '');
 
-    if (isAndroid) {
+    if (isMobile) {
       setIsGeneratingPDF(true);
       setPdfNotice('جاري تجهيز القائمة للطباعة...');
       try {
@@ -209,10 +209,9 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
         if (result) {
           const file = new File([result.blob], result.fileName, { type: 'application/pdf' });
           
-          // إذا كانت ميزة المشاركة الأصلية لنظام أندرويد متاحة
           if (navigator.canShare && navigator.canShare({ files: [file] })) {
             await navigator.share({
-              title: `طباعة قائمة ${invoice.invoiceNumber}`,
+              title: `قائمة ${invoice.invoiceNumber}`,
               files: [file],
             });
             setPdfNotice(null);
@@ -220,13 +219,12 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
             return;
           }
 
-          // فتح الـ PDF في نافذة جديدة لاستدعاء نافذة طباعة الهاتف
+          // فتح المعاينة لطباعتها عبر طابعة النظام
           const blobUrl = URL.createObjectURL(result.blob);
           const printWindow = window.open(blobUrl, '_blank');
           if (printWindow) {
             printWindow.focus();
           } else {
-            // بديل: تحميل الملف وفتح المعاينة
             const a = document.createElement('a');
             a.href = blobUrl;
             a.download = result.fileName;
@@ -237,14 +235,15 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
           setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
         }
       } catch (err) {
-        console.error('Android print error:', err);
+        console.error('Mobile print error:', err);
       } finally {
         setIsGeneratingPDF(false);
         setPdfNotice(null);
       }
+      return;
     }
 
-    // 3. بيئة المتصفحات العادية
+    // 3. بيئة المتصفح العادية
     window.scrollTo(0, 0);
     document.documentElement.scrollTop = 0;
     document.body.scrollTop = 0;
@@ -258,12 +257,29 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
     }, 100);
   };
 
+  // دالة حفظ ملف الـ PDF مع دعم المشاركة للأندرويد
   const handleDownloadPDF = async () => {
     setIsGeneratingPDF(true);
-    setPdfNotice(null);
+    setPdfNotice('جاري إنشاء ملف PDF...');
     try {
       const result = await generateInvoicePDF();
       if (!result) return;
+
+      const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent || '');
+      const file = new File([result.blob], result.fileName, { type: 'application/pdf' });
+
+      // استخدام مشاركة النظام على الموبايل لحفظ الملف في مجلد التنزيلات أو فتحه
+      if (isMobile && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          title: `حفظ قائمة ${invoice.invoiceNumber}`,
+          files: [file],
+        });
+        setPdfNotice('تم فتح خيارات الحفظ بنجاح');
+        setTimeout(() => setPdfNotice(null), 3000);
+        return;
+      }
+
+      // تنزيل مباشر للكمبيوتر والمتصفحات
       const url = URL.createObjectURL(result.blob);
       const a = document.createElement('a');
       a.href = url;
@@ -274,10 +290,12 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
       URL.revokeObjectURL(url);
       setPdfNotice('تم تحميل ملف PDF بنجاح');
       setTimeout(() => setPdfNotice(null), 4000);
-    } catch (err) {
-      console.error('Error generating PDF:', err);
-      setPdfNotice('حدث خطأ أثناء إنشاء ملف PDF');
-      setTimeout(() => setPdfNotice(null), 4000);
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        console.error('Error downloading PDF:', err);
+        setPdfNotice('حدث خطأ أثناء تنزيل الملف');
+        setTimeout(() => setPdfNotice(null), 4000);
+      }
     } finally {
       setIsGeneratingPDF(false);
     }
@@ -395,7 +413,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
 
       <div className="print-modal-card bg-white rounded-2xl border border-slate-300 shadow-2xl max-w-4xl w-full max-h-[96vh] flex flex-col overflow-hidden">
         
-        {/* Top Controls Bar */}
+        {/* شريط التحكم العلوي */}
         <div className="p-3 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-2.5 no-print">
           <div className="flex items-center gap-2.5 flex-wrap">
             <div className="flex items-center gap-1.5">
@@ -555,7 +573,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600" />
               ) : isCopied ? (
                 <Check className="w-3.5 h-3.5 text-emerald-600" />
-              )}
+              ) : null}
               <span>واتساب (PDF)</span>
             </button>
 
