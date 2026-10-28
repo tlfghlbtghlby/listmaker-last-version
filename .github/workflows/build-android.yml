@@ -27,7 +27,8 @@ jobs:
       - name: Install Dependencies
         run: |
           rm -f package-lock.json bun.lock
-          npm install --force --no-audit --no-fund
+          npm cache clean --force
+          npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: Build Web Application
         run: npm run build
