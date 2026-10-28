@@ -42,6 +42,51 @@ jobs:
           fi
           npx cap sync android
 
+      - name: Inject Native Android Print Support
+        run: |
+          MAIN_ACTIVITY=$(find android -name "MainActivity.java" | head -n 1)
+          if [ -n "$MAIN_ACTIVITY" ]; then
+            PACKAGE_NAME=$(grep "^package " "$MAIN_ACTIVITY" | head -n 1 | sed 's/;//')
+            cat << 'EOF' > "$MAIN_ACTIVITY"
+          $PACKAGE_NAME;
+
+          import android.os.Bundle;
+          import android.content.Context;
+          import android.print.PrintAttributes;
+          import android.print.PrintDocumentAdapter;
+          import android.print.PrintManager;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebView;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  try {
+                      WebView webView = getBridge().getWebView();
+                      webView.addJavascriptInterface(new Object() {
+                          @JavascriptInterface
+                          public void print() {
+                              runOnUiThread(() -> {
+                                  try {
+                                      PrintManager printManager = (PrintManager) getSystemService(Context.PRINT_SERVICE);
+                                      PrintDocumentAdapter printAdapter = webView.createPrintDocumentAdapter("Invoice");
+                                      printManager.print("قائمة مبيعات", printAdapter, new PrintAttributes.Builder().build());
+                                  } catch (Exception e) {
+                                      e.printStackTrace();
+                                  }
+                              });
+                          }
+                      }, "AndroidPrinter");
+                  } catch (Exception e) {
+                      e.printStackTrace();
+                  }
+              }
+          }
+          EOF
+          fi
+
       - name: Accept Android SDK Licenses
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
