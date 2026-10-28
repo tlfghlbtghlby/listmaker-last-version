@@ -25,7 +25,9 @@ jobs:
           java-version: '17'
 
       - name: Install Dependencies
-        run: npm install --no-audit --no-fund
+        run: |
+          rm -f package-lock.json bun.lock
+          npm install --force --no-audit --no-fund
 
       - name: Build Web Application
         run: npm run build
