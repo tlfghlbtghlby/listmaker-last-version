@@ -96,32 +96,145 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
       })
     : invoice.items;
 
-  // دالة الطباعة الأصلية
-  const handlePrint = () => {
-    // 1. نظام أندرويد عبر الجسر الأصلي (يفتح نافذة الطباعة وحفظ PDF الخاصة بالنظام)
-    if ((window as any).AndroidPrinter?.print) {
-      (window as any).AndroidPrinter.print();
-      return;
+  const generateInvoicePDF = async (): Promise<{ blob: Blob; fileName: string; dataUrl: string } | null> => {
+    const element = document.getElementById('printable-invoice');
+    if (!element) return null;
+
+    const dataUrl = await toPng(element, {
+      quality: 1,
+      pixelRatio: 2.5,
+      backgroundColor: '#ffffff',
+      skipFonts: true,
+      style: {
+        letterSpacing: 'normal',
+        wordSpacing: 'normal',
+        fontFamily: "'Cairo', 'Tajawal', Tahoma, Arial, sans-serif",
+      },
+    });
+
+    const img = new Image();
+    img.src = dataUrl;
+    await new Promise((resolve) => {
+      img.onload = resolve;
+    });
+
+    const aspect = img.naturalHeight / (img.naturalWidth || 1);
+    let pdf: jsPDF;
+    const fileName = `قائمة_${invoice.invoiceNumber}.pdf`;
+
+    if (printLayout === 'thermal58') {
+      const imgWidth = 48;
+      const imgHeight = imgWidth * aspect;
+      pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [58, imgHeight + 4] });
+      pdf.addImage(dataUrl, 'PNG', 5, 2, imgWidth, imgHeight);
+    } else if (printLayout === 'thermal80') {
+      const imgWidth = 72;
+      const imgHeight = imgWidth * aspect;
+      pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [80, imgHeight + 4] });
+      pdf.addImage(dataUrl, 'PNG', 4, 2, imgWidth, imgHeight);
+    } else if (printLayout === 'a5') {
+      pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a5' });
+      const pdfWidth = 148;
+      const pdfHeight = 210;
+      const imgWidth = pdfWidth - 8;
+      const imgHeight = imgWidth * aspect;
+      pdf.addImage(dataUrl, 'PNG', 4, 4, imgWidth, Math.min(imgHeight, pdfHeight - 8));
+    } else {
+      pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+      const pdfWidth = 210;
+      const pdfHeight = 297;
+      const imgWidth = pdfWidth - 12;
+      const imgHeight = imgWidth * aspect;
+      pdf.addImage(dataUrl, 'PNG', 6, 6, imgWidth, Math.min(imgHeight, pdfHeight - 12));
     }
 
-    // 2. بيئة Electron لويندوز
-    if ((window as any).electronAPI?.printInvoice) {
-      (window as any).electronAPI.printInvoice();
-      return;
-    }
-
-    // 3. متصفح الويب العادي
-    window.print();
+    const blob = pdf.output('blob');
+    return { blob, fileName, dataUrl };
   };
 
-  const handleDownloadPDF = () => {
-    if ((window as any).AndroidPrinter?.print) {
-      setPdfNotice('اختر "حفظ بتنسيق PDF" من القائمة العلوية لشاشة الطباعة');
-      (window as any).AndroidPrinter.print();
-      setTimeout(() => setPdfNotice(null), 5000);
+  const handlePrint = async () => {
+    if ((window as any).electronAPI?.printInvoice) {
+      try {
+        (window as any).electronAPI.printInvoice();
+        return;
+      } catch (e) {
+        console.warn('Electron print fallback', e);
+      }
+    }
+
+    // للموبايل والمتصفح: فتح نافذة الطباعة المنفصلة
+    const printContent = document.getElementById('printable-invoice');
+    if (!printContent) {
+      window.print();
       return;
     }
-    handlePrint();
+
+    const printWin = window.open('', '_blank');
+    if (printWin) {
+      printWin.document.write(`
+        <html dir="rtl">
+          <head>
+            <title>طباعة قائمة ${invoice.invoiceNumber}</title>
+            <style>
+              body { font-family: Tahoma, Arial, sans-serif; margin: 0; padding: 10px; }
+              table { width: 100%; border-collapse: collapse; }
+              th, td { border: 1px solid #000; padding: 4px; }
+            </style>
+          </head>
+          <body>
+            ${printContent.innerHTML}
+          </body>
+        </html>
+      `);
+      printWin.document.close();
+      printWin.focus();
+      setTimeout(() => {
+        printWin.print();
+        printWin.close();
+      }, 300);
+    } else {
+      window.print();
+    }
+  };
+
+  const handleDownloadPDF = async () => {
+    setIsGeneratingPDF(true);
+    setPdfNotice('جاري إنشاء ملف PDF...');
+    try {
+      const result = await generateInvoicePDF();
+      if (!result) return;
+
+      const file = new File([result.blob], result.fileName, { type: 'application/pdf' });
+      
+      // مشاركة الملف مباشرة مع تطبيقات الأندرويد (تتيح الحفظ أو الإرسال أو الطباعة)
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          title: `قائمة ${invoice.invoiceNumber}`,
+          files: [file]
+        });
+        setPdfNotice('تمت المشاركة بنجاح');
+        setTimeout(() => setPdfNotice(null), 3000);
+        return;
+      }
+
+      // تنزيل عادي للمتصفح والكمبيوتر
+      const url = URL.createObjectURL(result.blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = result.fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setPdfNotice('تم تحميل ملف PDF بنجاح');
+      setTimeout(() => setPdfNotice(null), 3000);
+    } catch (err: any) {
+      console.error(err);
+      setPdfNotice('تعذر إكمال العملية');
+      setTimeout(() => setPdfNotice(null), 3000);
+    } finally {
+      setIsGeneratingPDF(false);
+    }
   };
 
   const handleShareWhatsApp = async () => {
@@ -155,47 +268,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
 
   return (
     <div className="print-modal-overlay fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
-      <style dangerouslySetInnerHTML={{
-        __html: `
-          @media print {
-            body {
-              visibility: hidden !important;
-              background: transparent !important;
-            }
-            .print-modal-overlay {
-              position: static !important;
-              background: transparent !important;
-              padding: 0 !important;
-            }
-            .print-modal-card {
-              border: none !important;
-              box-shadow: none !important;
-              max-width: none !important;
-              max-height: none !important;
-              overflow: visible !important;
-            }
-            #printable-invoice, #printable-invoice * {
-              visibility: visible !important;
-            }
-            #printable-invoice {
-              position: absolute !important;
-              left: 0 !important;
-              top: 0 !important;
-              width: 100% !important;
-              margin: 0 !important;
-              padding: 10px !important;
-            }
-            .no-print {
-              display: none !important;
-            }
-            @page {
-              size: ${printLayout === 'a4' ? 'A4 portrait' : printLayout === 'a5' ? 'A5 portrait' : printLayout === 'thermal58' ? '58mm auto' : '80mm auto'};
-              margin: ${isThermal ? '1mm' : '4mm'} !important;
-            }
-          }
-        `
-      }} />
-
       <div className="print-modal-card bg-white rounded-2xl border border-slate-300 shadow-2xl max-w-4xl w-full max-h-[96vh] flex flex-col overflow-hidden">
         
         {/* شريط التحكم العلوي */}
@@ -208,9 +280,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                   type="button"
                   onClick={() => setPrintLayout('a4')}
                   className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition cursor-pointer ${
-                    printLayout === 'a4'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
+                    printLayout === 'a4' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   <FileText className="w-3.5 h-3.5" />
@@ -221,9 +291,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                   type="button"
                   onClick={() => setPrintLayout('a5')}
                   className={`flex items-center gap-1 px-2.5 py-1 rounded-md transition cursor-pointer ${
-                    printLayout === 'a5'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
+                    printLayout === 'a5' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   <FileText className="w-3.5 h-3.5" />
@@ -234,9 +302,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                   type="button"
                   onClick={() => setPrintLayout('thermal80')}
                   className={`flex items-center gap-1 px-2 py-1 rounded-md transition cursor-pointer ${
-                    printLayout === 'thermal80'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
+                    printLayout === 'thermal80' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   <Receipt className="w-3.5 h-3.5" />
@@ -247,9 +313,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                   type="button"
                   onClick={() => setPrintLayout('thermal58')}
                   className={`flex items-center gap-1 px-2 py-1 rounded-md transition cursor-pointer ${
-                    printLayout === 'thermal58'
-                      ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-500/40'
-                      : 'text-slate-600 hover:text-slate-900'
+                    printLayout === 'thermal58' ? 'bg-white text-emerald-800 shadow-xs ring-1 ring-emerald-500/40' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   <Receipt className="w-3.5 h-3.5" />
@@ -265,9 +329,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                   type="button"
                   onClick={() => setActiveTemplate('classic')}
                   className={`px-2 py-1 rounded-md transition cursor-pointer ${
-                    activeTemplate === 'classic'
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
+                    activeTemplate === 'classic' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   كلاسيكي
@@ -276,9 +338,7 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                   type="button"
                   onClick={() => setActiveTemplate('modern')}
                   className={`px-2 py-1 rounded-md transition cursor-pointer flex items-center gap-1 ${
-                    activeTemplate === 'modern'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
+                    activeTemplate === 'modern' ? 'bg-blue-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   <Sparkles className="w-3 h-3 text-amber-300" />
@@ -311,18 +371,20 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
             <button
               type="button"
               onClick={handlePrint}
+              disabled={isGeneratingPDF}
               className="px-3.5 py-1.5 text-xs font-bold text-white bg-slate-900 hover:bg-black rounded-lg shadow-xs flex items-center gap-1.5 transition cursor-pointer"
             >
-              <Printer className="w-4 h-4" />
+              {isGeneratingPDF ? <RefreshCw className="w-4 h-4 animate-spin text-white" /> : <Printer className="w-4 h-4" />}
               <span>طباعة القائمة</span>
             </button>
 
             <button
               type="button"
               onClick={handleDownloadPDF}
+              disabled={isGeneratingPDF}
               className="px-3.5 py-1.5 text-xs font-bold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 rounded-lg flex items-center gap-1.5 transition cursor-pointer"
             >
-              <FileDown className="w-3.5 h-3.5 text-emerald-700" />
+              {isGeneratingPDF ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-700" /> : <FileDown className="w-3.5 h-3.5 text-emerald-700" />}
               <span>حفظ PDF</span>
             </button>
 
@@ -402,14 +464,10 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                 ) : (
                   <div className="border border-black rounded-md p-2.5 sm:p-3 relative flex flex-col items-center justify-center text-center">
                     <div className="absolute right-2.5 top-2">
-                      <StarburstSeal 
-                        text={settings.headerRightSealText || (settings.enableWholesale ? "جملة" : "تجزئة")} 
-                      />
+                      <StarburstSeal text={settings.headerRightSealText || (settings.enableWholesale ? "جملة" : "تجزئة")} />
                     </div>
                     <div className="absolute left-2.5 top-2">
-                      <StarburstSeal 
-                        text={settings.headerLeftSealText || "مفرد"} 
-                      />
+                      <StarburstSeal text={settings.headerLeftSealText || "مفرد"} />
                     </div>
                     <h1 className="text-xl sm:text-2xl font-black text-black">
                       {settings.storeName || 'المحل'}
@@ -417,12 +475,6 @@ export const InvoicePrintModal: React.FC<InvoicePrintModalProps> = ({ invoice, o
                     <div className="text-xs sm:text-sm font-bold text-black mt-1">
                       {settings.managerLabel || 'بإدارة'}: {settings.ownerName || settings.storeName} · {settings.businessSubtitle || 'تجارة عامة'}
                     </div>
-                    {(settings.address || settings.phone) && (
-                      <div className="text-[11px] font-semibold text-black mt-1 pt-1 border-t border-dotted border-black/40 w-full text-center">
-                        {settings.address && <span>{settings.address}&nbsp;&nbsp;&nbsp;&nbsp;</span>}
-                        {settings.phone && <span>هاتف: {settings.phone}</span>}
-                      </div>
-                    )}
                   </div>
                 )}
 
